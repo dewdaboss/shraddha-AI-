@@ -22,6 +22,9 @@ from PySide6.QtWidgets import (
 
 from shraddha.ui.theme import BUBBLE_MAX_WIDTH_RATIO, BUBBLE_ROLES, bubble_style
 
+#: Placeholder shown while a streamed answer has not produced its first chunk yet.
+STREAM_PLACEHOLDER = "सोच रही हूँ…"
+
 
 class MessageBubble(QFrame):
     """One chat message. Holds text only; styling comes from the role."""
@@ -56,6 +59,16 @@ class MessageBubble(QFrame):
     def role(self) -> str:
         return self._role
 
+    def set_text(self, text: str) -> None:
+        """Replace the bubble text (used by streaming)."""
+        self._label.setText(text)
+
+    def append_text(self, chunk: str) -> str:
+        """Append a chunk and return the whole message."""
+        updated = f"{self._label.text()}{chunk}"
+        self._label.setText(updated)
+        return updated
+
     def apply_max_width(self, chat_width: int) -> None:
         """Constrain wrapping to a fraction of the transcript width."""
         self._label.setMaximumWidth(max(160, int(chat_width * BUBBLE_MAX_WIDTH_RATIO)))
@@ -73,6 +86,8 @@ class ChatView(QWidget):
         super().__init__(parent)
         self._max_bubbles = max(1, max_bubbles)
         self._bubbles: list[MessageBubble] = []
+        self._stream: MessageBubble | None = None
+        self._stream_placeholder = False
 
         self._scroll = QScrollArea(self)
         self._scroll.setObjectName("ChatScroll")
@@ -111,12 +126,63 @@ class ChatView(QWidget):
         self._scroll_to_bottom()
         return bubble
 
+    # ---------------------------------------------------------------- streaming
+    @property
+    def is_streaming(self) -> bool:
+        return self._stream is not None
+
+    @property
+    def stream_text(self) -> str:
+        return "" if self._stream is None else self._stream.text
+
+    def begin_stream(
+        self, role: str = "assistant", placeholder: str = STREAM_PLACEHOLDER
+    ) -> MessageBubble:
+        """Open a bubble that subsequent chunks are appended to."""
+        if self._stream is not None:  # never leave two bubbles streaming
+            self.finish_stream()
+        bubble = self.add_message(placeholder, role)
+        self._stream = bubble
+        self._stream_placeholder = bool(placeholder)
+        return bubble
+
+    def append_chunk(self, chunk: str) -> str:
+        """Append streamed text; returns the message so far."""
+        bubble = self._stream
+        if bubble is None:
+            bubble = self.begin_stream(placeholder="")
+        if self._stream_placeholder:
+            bubble.set_text(chunk)
+            self._stream_placeholder = False
+        else:
+            bubble.append_text(chunk)
+        self._scroll_to_bottom()
+        return bubble.text
+
+    def finish_stream(self) -> str:
+        """Close the streaming bubble and return its final text."""
+        bubble, self._stream = self._stream, None
+        self._stream_placeholder = False
+        return "" if bubble is None else bubble.text
+
+    def cancel_stream(self, suffix: str = " …") -> str:
+        """Close a stream early, marking it as interrupted."""
+        bubble, self._stream = self._stream, None
+        if bubble is None:
+            return ""
+        self._stream_placeholder = False
+        if suffix and bubble.text:
+            bubble.append_text(suffix)
+        return bubble.text
+
     def clear(self) -> None:
         for bubble in self._bubbles:
             self._layout.removeWidget(bubble)
             bubble.setParent(None)
             bubble.deleteLater()
         self._bubbles.clear()
+        self._stream = None
+        self._stream_placeholder = False
 
     @property
     def messages(self) -> list[tuple[str, str]]:
@@ -135,6 +201,9 @@ class ChatView(QWidget):
         overflow = len(self._bubbles) - self._max_bubbles
         for _ in range(max(0, overflow)):
             oldest = self._bubbles.pop(0)
+            if oldest is self._stream:
+                self._stream = None
+                self._stream_placeholder = False
             self._layout.removeWidget(oldest)
             oldest.setParent(None)
             oldest.deleteLater()

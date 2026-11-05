@@ -20,7 +20,7 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
-CONFIG_SCHEMA_VERSION = 2
+CONFIG_SCHEMA_VERSION = 3
 
 SAMPLE_RATES = (8_000, 16_000, 22_050, 44_100, 48_000)
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
@@ -28,6 +28,8 @@ ASR_ENGINES = ("auto", "sherpa", "vosk", "none")
 TTS_ENGINES = ("auto", "onecore", "piper", "none")
 THEMES = ("system", "dark", "light")
 WAKE_MODES = ("push_to_talk", "phrase", "off")
+#: ``none`` = fully local. ``gemini`` = cloud (needs key + consent). ``local`` = Phase 6.
+LLM_PROVIDERS = ("none", "gemini", "local")
 
 
 class ConfigError(ValueError):
@@ -188,18 +190,61 @@ class UiConfig:
 
 @dataclass(slots=True)
 class LlmConfig:
-    """Optional local LLM (Phase 6). Disabled by default: it is the RAM hog."""
+    """The assistant's "thinking" layer.
 
+    A fresh install is completely offline: ``provider = "none"``, ``enabled = False`` and
+    ``allow_cloud = False``. Cloud answers require **all three** of a provider, a key and
+    explicit consent (:attr:`allow_cloud`), so nothing can be uploaded by accident.
+
+    ``model_path``/``context_size``/``num_threads``/``idle_unload_s`` belong to the local
+    llama.cpp provider (Phase 6) and are kept so a config written today still loads.
+    """
+
+    provider: str = "none"
+    model: str = "gemini-flash-latest"
+    fallback_model: str = "gemini-2.5-flash"
     enabled: bool = False
+    #: The consent flag. Only a deliberate user action sets it (chat phrase or --ai-consent).
+    allow_cloud: bool = False
+    api_key_env: str = "GEMINI_API_KEY"
+    timeout_s: int = 30
+    max_output_tokens: int = 1_024
+    temperature: float = 0.6
+    history_turns: int = 8
+    stream: bool = True
+
+    # local provider (Phase 6) - unchanged, still loaded from older configs
     model_path: str | None = None
     context_size: int = 2_048
     num_threads: int = 2
     idle_unload_s: int = 60
 
     def validate(self) -> None:
+        _check_choice(self.provider, LLM_PROVIDERS, "llm.provider")
+        _require(bool(str(self.model).strip()), "llm.model must not be empty")
+        _require(
+            self.fallback_model is None or isinstance(self.fallback_model, str),
+            "llm.fallback_model must be a string or null",
+        )
+        _require(bool(str(self.api_key_env).strip()), "llm.api_key_env must not be empty")
+        _check_int(self.timeout_s, "llm.timeout_s", 5, 120)
+        _check_int(self.max_output_tokens, "llm.max_output_tokens", 64, 8_192)
+        _check_int(self.history_turns, "llm.history_turns", 0, 50)
+        _require(
+            0.0 <= float(self.temperature) <= 2.0, "llm.temperature must be between 0 and 2"
+        )
         _check_int(self.context_size, "llm.context_size", 512, 32_768)
         _check_int(self.num_threads, "llm.num_threads", 1, 16)
         _check_int(self.idle_unload_s, "llm.idle_unload_s", 0, 3_600)
+
+    @property
+    def cloud_configured(self) -> bool:
+        """Provider, master switch *and* consent agree.
+
+        The API key is checked separately (:func:`shraddha.ai.key_report`) because it is
+        never part of the configuration file.
+        """
+        return self.provider == "gemini" and self.enabled and self.allow_cloud
 
 
 _SECTIONS: dict[str, type] = {

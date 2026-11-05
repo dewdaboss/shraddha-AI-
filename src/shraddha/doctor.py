@@ -33,6 +33,7 @@ OPTIONAL_EXTRAS: dict[str, tuple[str, ...]] = {
     "asr-vosk (vosk)": ("vosk",),
     "tts-piper (piper)": ("piper",),
     "win (pywin32)": ("win32com",),
+    "ai (google-genai)": ("google.genai",),
 }
 
 #: 4 GB is the supported floor; the LLM needs 8 GB.
@@ -64,6 +65,7 @@ class DoctorReport:
     microphone: dict[str, object] = field(default_factory=dict)
     asr_engines: dict[str, dict[str, object]] = field(default_factory=dict)
     wake_mode: str = ""
+    ai: dict[str, object] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, object]:
@@ -88,6 +90,7 @@ class DoctorReport:
             "microphone": self.microphone,
             "asr_engines": self.asr_engines,
             "wake_mode": self.wake_mode,
+            "ai": self.ai,
             "warnings": self.warnings,
         }
 
@@ -144,6 +147,31 @@ class DoctorReport:
             detail = "" if ready else f" - {info.get('message')}"
             lines.append(f"  {mark[ready]}  engine {name}{detail}")
         lines.append(f"       wake word mode: {self.wake_mode or 'unknown'}")
+
+        lines += ["", "cloud ai (optional)", "-" * 46]
+        ai = self.ai
+        sdk_ok = bool(ai.get("sdk"))
+        lines.append(f"  {mark[sdk_ok]}  google-genai sdk")
+        lines.append(f"       provider: {ai.get('provider', 'none')}")
+        lines.append(
+            f"       model:    {ai.get('model', '')} (fallback: {ai.get('fallback_model') or 'none'})"
+        )
+        key_line = (
+            f"present ({ai.get('key_masked')}, from {ai.get('key_source')})"
+            if ai.get("key_present")
+            else "MISSING - python -m shraddha --set-api-key"
+        )
+        lines.append(f"       api key:  {key_line}")
+        consent = bool(ai.get("consent"))
+        lines.append(
+            "       consent:  "
+            + (
+                "granted - unanswered questions are sent to Google"
+                if consent
+                else "not granted - nothing is sent to Google"
+            )
+        )
+        lines.append(f"       status:   {ai.get('status', 'off')}")
 
         if self.warnings:
             lines += ["", "warnings", "-" * 46, *(f"  ! {w}" for w in self.warnings)]
@@ -286,9 +314,46 @@ def run_doctor(paths: Paths | None = None, config: AppConfig | None = None) -> D
     report.microphone = {"available": mic_ok, "reason": mic_reason}
     report.asr_engines = engine_report(resolved.models)
     report.wake_mode = loaded.wake.mode
+    report.ai = _check_ai(loaded)
 
     _append_advice(report, loaded)
     return report
+
+
+def _check_ai(config: AppConfig) -> dict[str, object]:
+    """Cloud-AI facts for the report. Never imports the SDK, never opens a socket."""
+    llm = config.llm
+    sdk = _module_present(("google.genai",))
+    info: dict[str, object] = {
+        "provider": llm.provider,
+        "model": llm.model,
+        "fallback_model": llm.fallback_model,
+        "enabled": llm.enabled,
+        "consent": llm.allow_cloud,
+        "sdk": sdk,
+        "status": "off",
+        "key_present": False,
+        "key_masked": "(none)",
+        "key_source": "none",
+    }
+    try:
+        from shraddha.ai import key_report, make_service
+
+        keys = key_report(llm)
+        info["key_present"] = bool(keys.get("present"))
+        info["key_masked"] = keys.get("masked", "(none)")
+        info["key_source"] = keys.get("source", "none")
+        info["credential_store"] = bool(keys.get("credential_store"))
+        service = make_service(llm)
+        try:
+            info["status"] = service.status()
+            info["message"] = service.status_message()
+        finally:
+            service.close()
+    except Exception as exc:  # a broken extra must not hide the rest of the report
+        info["error"] = str(exc)
+        log.warning("cloud AI probe failed: %s", exc)
+    return info
 
 
 def _append_advice(report: DoctorReport, config: AppConfig) -> None:
@@ -302,10 +367,22 @@ def _append_advice(report: DoctorReport, config: AppConfig) -> None:
         report.warnings.append(
             f"only {report.ram_total_gb:.1f} GB RAM; the supported floor is {RAM_FLOOR_GB} GB"
         )
-    if config.llm.enabled and report.ram_total_gb is not None and report.ram_total_gb < RAM_LLM_GB:
+    local_llm = config.llm.enabled and config.llm.provider == "local"
+    if local_llm and report.ram_total_gb is not None and report.ram_total_gb < RAM_LLM_GB:
         report.warnings.append(
             f"llm.enabled is true but {RAM_LLM_GB} GB RAM is recommended for a local LLM"
         )
+    if config.llm.enabled and config.llm.provider == "gemini":
+        if not report.ai.get("sdk"):
+            report.warnings.append("cloud AI is enabled but google-genai is missing: pip install -e '.[ai]'")
+        if not report.ai.get("key_present"):
+            report.warnings.append(
+                "cloud AI is enabled but no API key was found: python -m shraddha --set-api-key"
+            )
+        if not config.llm.allow_cloud:
+            report.warnings.append(
+                "cloud AI is enabled but consent was not granted: python -m shraddha --ai-consent"
+            )
     if report.selected_engine == tts.NONE and tts.is_windows():
         report.warnings.append(
             "no Hindi voice available: install the Hindi speech feature in Windows settings "

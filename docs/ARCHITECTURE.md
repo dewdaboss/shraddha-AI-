@@ -100,7 +100,13 @@ Mitigations that keep Python acceptable:
 | `commands/actions.py` | **the only module that launches a process or opens a folder** | trust a transcript |
 | `commands/confirmation.py` | spoken yes/no gate for sensitive actions | assume silence is consent |
 | `ui/voice.py` | Qt bridge: worker thread → signals, no polling timers | decode audio on the GUI thread |
-| `ui/app.py` | wiring: controller, lifecycle, persistence, command dispatch | own layout code |
+| `ai/base.py` | `AiError` codes, `ChatMessage`, `LlmProvider` protocol, lazy-module probe | import a provider SDK |
+| `ai/keys.py` | key precedence (env → env → Credential Manager), masking, store/unstore | log or persist a key |
+| `ai/prompts.py` | the Hindi system instruction + consent notices + exact consent phrases | hold UI state |
+| `ai/gemini.py` | `google-genai` client, streaming, one-level model fallback, error translation | import at module level, act on the PC |
+| `ai/service.py` | the three-way gate, history window, one retry, streaming events | raise at the UI boundary |
+| `ui/ai.py` | Qt bridge: AI worker thread → signals, single in-flight request, cancel | decode/parse answers into actions |
+| `ui/app.py` | wiring: controller, lifecycle, persistence, command dispatch, AI hand-off | own layout code |
 
 ## 4. Threading and CPU discipline
 
@@ -128,7 +134,7 @@ estimates for a 4-core Windows 10 laptop and are the ones to re-measure on real 
 
 | Stage | Budget |
 |---|---|
-| Process spawn → window ready | **184 ms measured** (budget 2 s) |
+| Process spawn → window ready | **200 ms measured** (budget 2 s) |
 | Hotkey → window shown | 50 ms |
 | Mic warm-up + VAD arm | 100 ms |
 | End of speech → transcript | 250–600 ms (int8 streaming ASR, ~1 s utterances) |
@@ -156,18 +162,53 @@ Memory policy, in one sentence: **a model exists only between "user starts speak
 `asr.idle_unload_s` after the last utterance**, and the same rule applies to wake mode with
 its own (shorter) timer.
 
-## 7. Failure and privacy rules
+## 7. The AI boundary (Phase 3)
+
+```
+text ─► confirmation gate ─► commands/router ─┬─► ActionExecutor  (allowlisted actions)
+                                              └─► INTENT_UNKNOWN ─► AiService ─► Gemini
+```
+
+Three structural rules, each enforced by a test rather than by good intentions:
+
+1. **The model is a text source, never an actor.** `shraddha/ai/*` may not import
+   `subprocess`, `ctypes`, `shlex` or `shraddha.commands`; model output goes to a chat
+   label and nowhere else. Commands come from `commands.router` + the confirmation gate,
+   exactly as in Phase 2.
+2. **Local always wins.** Routing happens *before* the AI is consulted. A recognised
+   command, a router refusal ("photoshop kholo" → "यह ऐप इस कंप्यूटर पर नहीं है"), a date/
+   time question or an open action never reaches the network. Only `INTENT_UNKNOWN` with
+   no local answer does.
+3. **Nothing leaves without key + consent.** `llm.enabled`, `llm.provider`, a found key and
+   `llm.allow_cloud` are checked in that order on every single request, not just at
+   startup, so revoking consent in the chat takes effect immediately.
+
+| Concern | Where | Rule |
+|---|---|---|
+| SDK import | `ai/gemini.py`, on the worker | never at module import (startup stays ~200 ms) |
+| Network | `ui/ai.py` worker thread | never on the GUI thread |
+| Key | `ai/keys.py` | never in `config.json`, logs, reports or messages (only `…last4`) |
+| Errors | `ai/gemini.translate_error` | one Hindi sentence + hint; no traceback escapes |
+| Retry | `ai/service.py` | once, 1 s, only before the first chunk, only for retryable codes |
+| Cancel | `ui/ai.py` | overlay close / quit stops the stream; partial text is kept and marked |
+| Streaming | `ui/chat.py` | one bubble per answer, spoken once when complete |
+
+Cost when unused: **0 sockets, 0 SDK imports, 0 extra threads.** Measured idle RSS with the
+whole AI layer wired in is 64.4 MB (Phase 2: 64.0 MB).
+
+## 8. Failure and privacy rules
 
 - **Offline is normal, not an error state.** No feature may require the network except
-  the one-time model download.
-- **No audio leaves the machine.** No crash reporter, no analytics, no auto-update
-  pings. Model downloads are the only outbound request and are explicit, user-initiated
-  and checksum-verified.
+  the one-time model download and the optional, per-question cloud answer.
+- **No audio ever leaves the machine.** No crash reporter, no analytics, no auto-update
+  pings. Model downloads are explicit, user-initiated and checksum-verified. The only
+  outbound request the assistant can make on its own is the Gemini call, and only after
+  a stored key *and* in-app consent — otherwise it is absent from the process entirely.
 - **Degrade, don't crash:** if the mic is missing, run text-only. If a model is missing,
   fall back to the lighter engine. If TTS fails, show the text.
 - **Single instance** via a named mutex / lock file — a second launch focuses the first.
 
-## 8. Packaging
+## 9. Packaging
 
 | Concern | Choice |
 |---|---|

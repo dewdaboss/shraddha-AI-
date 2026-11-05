@@ -32,6 +32,7 @@ asr = ["sherpa-onnx>=1.11,<2"]               # Apache-2.0 streaming ASR runtime
 asr-vosk = ["vosk>=0.3.45"]                  # ultra-light ASR fallback
 tts-piper = ["piper-tts>=1.2,<2"]            # neural Hindi TTS (see licence caveats)
 win = ["pywin32>=306; sys_platform == 'win32'"]  # SAPI / OneCore voice access
+ai = ["google-genai>=2.34,<3"]                 # official Gemini SDK (Phase 3, opt-in)
 dev = [
     "pytest>=8,<9",
     "pytest-cov>=5,<7",

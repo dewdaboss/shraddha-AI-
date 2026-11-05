@@ -12,6 +12,7 @@ import os
 import sys
 
 from shraddha import APP_NAME, __version__
+from shraddha.ai import STATUS_CONSENT, AiService, consent_intent, make_service
 from shraddha.assistant import KIND_SYSTEM, Assistant
 from shraddha.commands import (
     INTENT_INFO_DATE,
@@ -39,6 +40,9 @@ EXIT_ERROR = 1
 EXIT_ALREADY_RUNNING = 2
 EXIT_NO_QT = 4
 
+#: AI error codes that are really "the feature is off", not "your question failed".
+_AI_STATUS_CODES = ("off", "no_key", "consent_required", "no_provider", "no_sdk", "sdk_missing")
+
 WELCOME_TEXT = (
     "नमस्ते! मैं श्रद्धा हूँ।\nहिन्दी या Hinglish में लिखिए — जवाब तुरंत मिलेगा, और सब कुछ आपके कंप्यूटर पर ही रहेगा।"
 )
@@ -49,6 +53,7 @@ STATUS_LISTENING = "सुन रही हूँ… बोलिए"
 STATUS_WAKE = "श्रद्धा कहकर बुलाइए"
 STATUS_THINKING = "सोच रही हूँ…"
 STATUS_MUTED = "माइक्रोफ़ोन म्यूट है"
+STATUS_AI_THINKING = "क्लाउड AI से जवाब आ रहा है…"
 
 
 class AssistantController:
@@ -64,12 +69,14 @@ class AssistantController:
         recognizer_factory=None,
         executor: ActionExecutor | None = None,
         tts_engine=None,
+        ai_service: AiService | None = None,
     ) -> None:
         self.paths = paths or get_paths().ensure()
         self.config = config or AppConfig.load(self.paths.config_file)
         self.assistant = Assistant(language=self.config.ui.language)
         self.db = self._open_database()
 
+        from shraddha.ui.ai import AiBridge
         from shraddha.ui.hotkey import GlobalHotkey
         from shraddha.ui.ipc import ActivationServer
         from shraddha.ui.overlay import AssistantOverlay
@@ -100,6 +107,13 @@ class AssistantController:
             allow_power_actions=self.config.commands.allow_power_actions
         )
         self.confirmation = ConfirmationGate()
+        # --- cloud intelligence (Phase 3, opt-in) -------------------------
+        # Constructing the service opens no socket: the provider is built lazily and only
+        # when the three-way gate (enabled + provider + key + consent) is open.
+        self.ai: AiService = ai_service or make_service(self.config.llm)
+        self.ai_bridge = AiBridge(self.ai)
+        self._ai_notice_shown = False
+        self._ai_source = "typed"
         self.tts = tts_engine or tts_module.create_engine(
             engine=self.config.tts.engine,
             voice=self.config.tts.voice,
@@ -114,6 +128,7 @@ class AssistantController:
         self.overlay.mic_toggled.connect(self.on_mic_toggled)
         self.overlay.mute_toggled.connect(self.on_mute_toggled)
         self.overlay.closed.connect(self._sync_tray_hidden)
+        self.overlay.closed.connect(self._cancel_ai)
         self.server.activated.connect(self.on_activation_requested)
         self.bridge.final.connect(self.on_voice_final)
         self.bridge.partial.connect(self.overlay.set_partial)
@@ -121,6 +136,10 @@ class AssistantController:
         self.bridge.error.connect(self.on_voice_error)
         self.bridge.wake.connect(self.on_wake)
         self.bridge.muted.connect(self.on_mic_muted)
+        self.ai_bridge.partial.connect(self.on_ai_partial)
+        self.ai_bridge.final.connect(self.on_ai_final)
+        self.ai_bridge.error.connect(self.on_ai_error)
+        self.ai_bridge.cancelled.connect(self.on_ai_cancelled)
         if self.tray is not None:
             self.tray.activated.connect(self.on_tray_activated)
             self.tray.clear_requested.connect(self.on_clear_chat)
@@ -186,6 +205,7 @@ class AssistantController:
         self._shut_down = True
         self.hotkey.unregister()
         self.server.stop()
+        self.ai_bridge.shutdown()
         self.bridge.shutdown()
         self._detach_bridge()
         with_tts = getattr(self.tts, "close", None)
@@ -275,48 +295,135 @@ class AssistantController:
         self.overlay.append_message(text, "user")
         self._persist("user", text)
 
-        reply = self.handle_text(text)
+        reply, question = self.plan_text(text)
+        if question is not None:
+            self._ask_ai(question, source)
+            return
+        self._deliver(reply, source)
+
+    def _deliver(self, reply: str, source: str) -> None:
+        """Show, store and speak a locally produced answer."""
         self.overlay.append_message(reply, "assistant")
         self._persist("assistant", reply)
         self._speak(reply)
-        log.debug("%s command handled: %d chars in, %d chars out", source, len(text), len(reply))
+        log.debug("%s command handled: %d chars out", source, len(reply))
 
     def handle_text(self, text: str) -> str:
-        """Route one utterance: confirmation -> command -> assistant fallback."""
+        """Route one utterance and return a *local* answer (synchronous callers).
+
+        The chat window uses :meth:`plan_text` instead so a cloud answer can stream in.
+        """
+        reply, question = self.plan_text(text)
+        if question is not None:
+            # Offline/text-only caller: fall back to the local engine, never to silence.
+            return self.assistant.respond(text).text
+        return reply or "ठीक है।"
+
+    def plan_text(self, text: str) -> tuple[str, str | None]:
+        """Route one utterance.
+
+        Returns ``(reply, question)``: exactly one of the two is set. ``reply`` is the
+        finished local answer; ``question`` means "ask the language model this, stream it
+        into the chat". Local commands always win - the model is only consulted when the
+        router has no idea what was said *and* there is nothing local to say.
+        """
+        consent = consent_intent(text)
+        if consent is not None:
+            reply = self.ai.apply_consent(consent)
+            self._save_config()
+            self._ai_notice_shown = True
+            return reply, None
+
         if self.confirmation.is_waiting:
             outcome, approved = self.confirmation.resolve(text)
             if outcome is ConfirmationOutcome.APPROVED and approved is not None:
                 result = self.executor.execute(approved)
-                return result.message or approved.spoken or "ठीक है।"
+                return result.message or approved.spoken or "ठीक है।", None
             if outcome is ConfirmationOutcome.DECLINED:
-                return "ठीक है, रद्द कर दिया।"
+                return "ठीक है, रद्द कर दिया।", None
             if outcome is ConfirmationOutcome.UNCLEAR:
-                return "कृपया 'हाँ' या 'नहीं' कहिए।"
+                return "कृपया 'हाँ' या 'नहीं' कहिए।", None
 
         command = self.router.route(text)
 
         if command.needs_confirmation:
             self.confirmation.request(command)
-            return command.spoken
+            return command.spoken, None
 
         if command.intent == INTENT_UNKNOWN:
-            # The router already knows the honest Hindi answer for e.g. "photoshop kholo".
-            return command.spoken or self.assistant.respond(text).text
+            # A spoken answer means the router already produced an honest reply
+            # ("photoshop kholo" -> "यह ऐप इस कंप्यूटर पर नहीं है"). Never override it.
+            if command.spoken:
+                return command.spoken, None
+            if self.ai.ready:
+                return "", text
+            self._note_ai_availability()
+            return self.assistant.respond(text).text, None
 
         if command.intent in (INTENT_INFO_DATE, INTENT_INFO_TIME):
-            return self.assistant.respond(text).text
+            return self.assistant.respond(text).text, None
 
         if command.intent == INTENT_VOICE_STOP:
             self._stop_listening()
-            return command.spoken
+            return command.spoken, None
 
         if command.intent == INTENT_VOICE_SWITCH:
-            return self._switch_voice()
+            return self._switch_voice(), None
 
         result = self.executor.execute(command)
         if not result.ok and result.detail == "not_found" and command.spoken:
-            return f"{result.message}"
-        return result.message or command.spoken or "ठीक है।"
+            return f"{result.message}", None
+        return result.message or command.spoken or "ठीक है।", None
+
+    # ------------------------------------------------------------ cloud answers
+    def _ask_ai(self, question: str, source: str) -> None:
+        """Hand a question to the worker thread; the chat fills in as chunks arrive."""
+        self._ai_source = source
+        if self.ai_bridge.ask(question):
+            return
+        # A request is already running: keep this turn honest with the local answer.
+        log.info("AI busy; answering %r locally", question[:40])
+        self._deliver(self.assistant.respond(question).text, source)
+
+    def _note_ai_availability(self) -> None:
+        """One Hindi notice per session when the key exists but consent is missing."""
+        if self._ai_notice_shown or self.ai.status() != STATUS_CONSENT:
+            return
+        self._ai_notice_shown = True
+        self.overlay.append_message(self.ai.status_message(), KIND_SYSTEM)
+
+    def on_ai_partial(self, chunk: str) -> None:
+        if not self.overlay.is_streaming:
+            self.overlay.begin_stream_message()
+        self.overlay.stream_chunk(chunk)
+
+    def on_ai_final(self, text: str) -> None:
+        """Close the streaming bubble (or add one) and finish the turn."""
+        if self.overlay.is_streaming:
+            final = self.overlay.finish_stream_message() or text
+        else:
+            final = text
+            if final:
+                self.overlay.append_message(final, "assistant")
+        if not final:
+            return
+        self._persist("assistant", final)
+        self._speak(final)
+        log.debug("AI answer delivered: %d chars", len(final))
+
+    def on_ai_error(self, message: str, code: str) -> None:
+        log.warning("AI error (%s): %s", code, message)
+        if self.overlay.is_streaming:
+            self.overlay.cancel_stream_message()
+        role = KIND_SYSTEM if code in _AI_STATUS_CODES else "assistant"
+        self.overlay.append_message(message, role)
+
+    def on_ai_cancelled(self) -> None:
+        if self.overlay.is_streaming:
+            self.overlay.cancel_stream_message()
+
+    def _cancel_ai(self) -> None:
+        self.ai_bridge.cancel()
 
     def _stop_listening(self) -> None:
         self.bridge.set_muted(True)
@@ -390,6 +497,10 @@ class AssistantController:
             (self.bridge.error, self.on_voice_error),
             (self.bridge.wake, self.on_wake),
             (self.bridge.muted, self.on_mic_muted),
+            (self.ai_bridge.partial, self.on_ai_partial),
+            (self.ai_bridge.final, self.on_ai_final),
+            (self.ai_bridge.error, self.on_ai_error),
+            (self.ai_bridge.cancelled, self.on_ai_cancelled),
         ):
             with contextlib.suppress(RuntimeError, TypeError):
                 signal.disconnect(slot)

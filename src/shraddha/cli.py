@@ -20,6 +20,7 @@ from shraddha.paths import Paths, get_paths
 EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_NOT_IMPLEMENTED = 3
+EXIT_NO_QT = 4
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -34,6 +35,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true", help="machine-readable output (with --doctor)"
     )
     parser.add_argument("--init", action="store_true", help="create folders, config and database")
+    parser.add_argument(
+        "--ui",
+        action="store_true",
+        help="start the desktop assistant (tray + overlay); requires the 'ui' extra",
+    )
+    parser.add_argument(
+        "--smoke",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help=argparse.SUPPRESS,  # internal: start the UI, report READY, exit after N s
+    )
     parser.add_argument("--verbose", action="store_true", help="debug-level logging")
     return parser
 
@@ -41,11 +54,17 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if not (args.doctor or args.init):
+    if not (args.doctor or args.init or args.ui or args.smoke is not None):
         parser.print_help()
         return EXIT_OK
 
     paths = get_paths()
+    if args.ui or args.smoke is not None:
+        # Imported here, not at module level: Qt costs ~90 ms and the CLI must stay fast.
+        from shraddha.ui.app import run_ui
+
+        return run_ui(paths=paths, smoke_seconds=args.smoke)
+
     setup_logging(level="DEBUG" if args.verbose else "INFO", log_file=paths.log_file, console=False)
 
     if args.init:

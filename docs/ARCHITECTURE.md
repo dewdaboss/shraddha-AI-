@@ -31,6 +31,9 @@
             └────────────────────────┘                  └──────────────────────────────┘
 ```
 
+**Implemented in Phase 1:** tray, overlay, hotkey, single instance, text chat, SQLite
+history. **Still stubbed:** the microphone (VAD + ASR), speech output and the LLM.
+
 **Three rules drive every decision:**
 
 1. **Rules before models.** Deterministic commands ("Chrome kholo", "10 minute ka timer")
@@ -67,7 +70,18 @@ Mitigations that keep Python acceptable:
 
 | Module | Responsibility | Must NOT |
 |---|---|---|
-| `core/paths.py` | one place that knows where files live (`%LOCALAPPDATA%\Shraddha`) | guess paths elsewhere |
+| `paths.py` | one place that knows where files live (`%LOCALAPPDATA%\Shraddha`) | guess paths elsewhere |
+| `instance.py` | exclusive lock file with stale-PID recovery | assume the OS cleans up after a crash |
+| `hotkey.py` | parse "ctrl+alt+s" into Win32 modifiers + virtual key | call ctypes |
+| `assistant.py` | deterministic Hindi/Hinglish replies + the Phase 4/6 seam | touch the network |
+| `speech/asr.py` | recogniser protocol + honest "not yet" placeholder | load a model at import |
+| `ui/theme.py` | design tokens and stylesheet (Qt-free) | import Qt |
+| `ui/overlay.py` | the floating card: chat, input, mic, animation | contain business logic |
+| `ui/chat.py` | transcript view, bounded to 200 bubbles | parse markup |
+| `ui/tray.py` | tray icon, menu, notifications, degradation | crash when no tray exists |
+| `ui/hotkey.py` | `RegisterHotKey` + Qt native event filter | install a keyboard hook |
+| `ui/ipc.py` | local socket so a second launch wakes the first | carry any real data |
+| `ui/app.py` | wiring: controller, lifecycle, persistence | own layout code |
 | `core/config.py` | typed config, defaults, validation, atomic save | import heavy deps |
 | `core/logging_setup.py` | rotating logs; degrade silently if disk is unwritable | raise into the UI |
 | `core/doctor.py` | capability detection (RAM, voices, models, extras) | mutate state |

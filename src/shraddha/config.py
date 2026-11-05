@@ -113,7 +113,8 @@ class UiConfig:
     language: str = "hi"
     theme: str = "system"
     overlay: bool = True
-    start_minimised: bool = True
+    start_minimised: bool = False
+    always_on_top: bool = True
 
     def validate(self) -> None:
         _check_choice(self.theme, THEMES, "ui.theme")

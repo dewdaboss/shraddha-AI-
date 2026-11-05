@@ -78,6 +78,7 @@ ignore = ["E501"]
 "tests/*" = ["T20"]
 "src/shraddha/cli.py" = ["T20"]     # CLI is allowed to print
 "scripts/*" = ["T20"]            # helper scripts are CLI tools
+"src/shraddha/ui/app.py" = ["T20"]  # startup errors go to stderr
 "src/shraddha/doctor.py" = ["T20"]  # doctor report renders to stdout
 
 [tool.coverage.run]

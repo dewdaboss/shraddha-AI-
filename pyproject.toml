@@ -1,0 +1,85 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shraddha-ai"
+version = "0.1.0"
+description = "SHRADDHA AI - a lightweight, local-first, offline-first Hindi voice assistant for Windows 10."
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "dewdaboss" }]
+keywords = ["assistant", "hindi", "offline", "local-first", "voice", "windows"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Environment :: Win32 (MS Windows)",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: Microsoft :: Windows :: Windows 10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+# The core is intentionally dependency-free (stdlib only): fast start, low RAM.
+dependencies = []
+
+[project.optional-dependencies]
+ui = ["PySide6-Essentials>=6.7,<7"]          # Qt6; needed for correct Devanagari shaping
+audio = ["sounddevice>=0.5,<1"]              # PortAudio capture, 16 kHz mono
+asr = ["sherpa-onnx>=1.11,<2"]               # Apache-2.0 streaming ASR runtime
+asr-vosk = ["vosk>=0.3.45"]                  # ultra-light ASR fallback
+tts-piper = ["piper-tts>=1.2,<2"]            # neural Hindi TTS (see licence caveats)
+win = ["pywin32>=306; sys_platform == 'win32'"]  # SAPI / OneCore voice access
+dev = [
+    "pytest>=8,<9",
+    "pytest-cov>=5,<7",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+shraddha = "shraddha.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+filterwarnings = ["error::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # isort
+    "B",        # bugbear
+    "UP",       # pyupgrade
+    "SIM",      # simplify
+    "C4",       # comprehensions
+    "RET",      # return
+    "PTH",      # pathlib
+    "T20",      # no print() in library code
+    "RUF",
+]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["T20"]
+"src/shraddha/cli.py" = ["T20"]     # CLI is allowed to print
+"scripts/*" = ["T20"]            # helper scripts are CLI tools
+"src/shraddha/doctor.py" = ["T20"]  # doctor report renders to stdout
+
+[tool.coverage.run]
+source = ["shraddha"]
+branch = true

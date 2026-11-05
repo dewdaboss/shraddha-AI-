@@ -2,18 +2,22 @@
 
 A lightweight, **local-first**, **Hindi-first** voice assistant for Windows 10.
 
-No cloud. No API keys. No subscription. No telemetry. It works with the network cable unplugged.
+No cloud by default. No API keys required. No subscription. No telemetry. It works with
+the network cable unplugged.
 
-> **Status: Phase 2 — Hindi voice.** Press the microphone (or say "श्रद्धा, …") and speak
-> Hindi or Hinglish; the words are recognised **on your machine**, routed through an
-> allowlist, executed, and answered out loud in Hindi. Recognition runs only while you
-> are actually speaking — no model is kept loaded while the app sits idle.
+> **Status: Phase 3 — optional cloud answers.** Press the microphone (or say "श्रद्धा, …")
+> and speak Hindi or Hinglish; the words are recognised **on your machine**, routed through
+> an allowlist, executed, and answered out loud in Hindi. Questions the rule engine cannot
+> answer can now be sent to **Google Gemini — but only after you add a key *and* grant
+> consent inside the app**. Until then nothing leaves the computer. See
+> [docs/AI.md](docs/AI.md).
 >
 > **What has not been verified here:** the real microphone/PortAudio path, the Windows
-> voices, and recognition accuracy on live speech. The development sandbox has no audio
-> hardware; all such behaviour is marked *hardware-dependent* in
-> [docs/VOICE.md](docs/VOICE.md#12-verification-what-is-tested-and-what-is-not). Open-ended
-> questions still need the optional local LLM (Phase 6). See [docs/ROADMAP.md](docs/ROADMAP.md).
+> voices, recognition accuracy on live speech, and everything that needs a real Gemini key
+> (Credential Manager storage, a live round-trip, free-tier quota). The development sandbox
+> has no audio hardware and no API key; those parts are marked *hardware-dependent* in
+> [docs/VOICE.md](docs/VOICE.md#12-verification-what-is-tested-and-what-is-not) and
+> [docs/AI.md](docs/AI.md#11-what-is-verified-and-what-is-not).
 
 ---
 
@@ -29,7 +33,8 @@ Design priorities, in order:
 1. **Low resource usage** — must stay usable on a 4 GB Windows 10 laptop.
 2. **Fast** — 176 ms from launch to a usable window; no browser engine, no background daemon.
 3. **Hindi voice** — Devanagari + Hinglish input, natural Hindi output.
-4. **Zero paid APIs** — every component is free and runs locally.
+4. **Zero paid services** — every default component is free and runs locally; the one
+   optional cloud feature (Gemini) uses a free tier and is off until you turn it on.
 
 ## What works today
 
@@ -48,8 +53,13 @@ Design priorities, in order:
 | Safety: allowlists, no shell, spoken confirmation, power actions refused | ✅ Phase 2 |
 | Hindi spoken replies (Windows OneCore + optional Piper) | ✅ Phase 2 (Windows synthesis is hardware-dependent) |
 | Idle model unloading, no always-on heavy model | ✅ Phase 2 |
+| Cloud answers (Google Gemini), **opt-in**, streamed into the chat | ✅ Phase 3 (mocked in tests; needs a real key on Windows) |
+| Provider layer with a model fallback (`gemini-flash-latest` → `gemini-2.5-flash`) | ✅ Phase 3 |
+| Keys from env vars or the Windows Credential Manager, never in `config.json` | ✅ Phase 3 (logic tested with a fake store) |
+| Offline / rate-limit / invalid-key / retired-model handling, in Hindi | ✅ Phase 3 |
+| The model can never open apps or run commands (test-enforced) | ✅ Phase 3 |
 | System skills beyond the allowlist (volume, files, windows) | ⏳ Phase 4 |
-| Optional local LLM | ⏳ Phase 6 |
+| Optional local LLM (llama.cpp, no network at all) | ⏳ Phase 6 |
 
 ## Quick start
 
@@ -99,6 +109,20 @@ python -m shraddha --ui
 Then press **Ctrl+Alt+S**, click the microphone, and say *"श्रद्धा, Chrome खोलो।"*
 Full details, tuning and troubleshooting: [docs/VOICE.md](docs/VOICE.md).
 
+### Optional: cloud answers (off by default)
+
+```bash
+pip install -e ".[ai]"                   # official google-genai SDK
+python -m shraddha --set-api-key         # hidden prompt -> Windows Credential Manager
+python -m shraddha --ai-check            # one real round-trip, prints the answer
+python -m shraddha --ai-consent          # or type "क्लाउड AI चालू करो" in the chat
+```
+
+`python -m shraddha --ai-status` shows the provider, the model, where the key came from
+(masked) and whether consent is granted; `--ai-off` switches it back off. Nothing is sent
+to Google until the key **and** the consent are both present, and PC actions always stay
+local. Details: [docs/AI.md](docs/AI.md).
+
 ## Measured performance
 
 From `python scripts/measure_resources.py` on the development sandbox
@@ -108,10 +132,10 @@ From `python scripts/measure_resources.py` on the development sandbox
 |---|---|---|
 | import core (`doctor`, `config`, `storage`) | 48 ms | — |
 | import Qt UI | 56 ms | — |
-| spawn → UI ready | **184 ms** | ≤ 2 s ✅ |
-| resident memory, idle (voice layer included) | **64.0 MB** | ≤ 90 MB ✅ |
+| spawn → UI ready | **200 ms** | ≤ 2 s ✅ |
+| resident memory, idle (voice + AI layers, no SDK loaded) | **64.4 MB** | ≤ 90 MB ✅ |
 | background processes | **0** | 0 ✅ |
-| heavy AI libraries imported at startup | **none** | none ✅ |
+| heavy AI libraries imported at startup | **none** (`google-genai` is imported lazily, on the worker, after consent) | none ✅ |
 
 A CI job fails the build if `onnxruntime`, `numpy`, `torch`, `sherpa_onnx`, `vosk` or Qt
 is ever imported on the CLI path — which is why startup stays instant and idle RAM stays
@@ -140,9 +164,13 @@ python -m shraddha --version
 python -m shraddha --doctor          # environment + capability report (--json for machines)
 python -m shraddha --init            # create config, database and folders
 python -m shraddha --ui              # start the desktop assistant
+python -m shraddha --ai-status       # cloud AI: provider, model, key source, consent
+python -m shraddha --ai-consent      # opt in to Google Gemini  (--ai-off to opt out)
+python -m shraddha --set-api-key     # store a Gemini key in the Credential Manager
+python -m shraddha --ai-check        # one real round-trip; prints the answer
 python scripts/fetch_models.py --list
 python scripts/measure_resources.py  # startup time and resident memory
-pytest                               # 466 tests
+pytest                               # 615 tests
 ```
 
 ## Repository layout
@@ -166,8 +194,13 @@ src/shraddha/
   commands/router.py Hindi/Hinglish sentences -> intents (pure, no I/O)
   commands/actions.py the only module that launches a process or opens a folder
   commands/confirmation.py spoken yes/no gate for sensitive actions
+  ai/                OPTIONAL cloud intelligence: gate, key handling, Gemini provider
+  ai/service.py      the three-way gate + history + retry + Hindi error translation
+  ai/gemini.py       google-genai provider (lazy import, one-level model fallback)
+  ai/keys.py         env vars -> Windows Credential Manager, masked everywhere
   storage/db.py      SQLite schema + migrations
-  ui/                theme, overlay, chat, tray, hotkey, ipc, voice bridge, app wiring
+  ui/                theme, overlay, chat, tray, hotkey, ipc, voice bridge, AI bridge,
+                     app wiring
 docs/                architecture, voice pipeline, UI notes, roadmap, model provisioning
 scripts/             model downloader, resource measurement
 tests/               pytest suite (runs headless on Linux, including the Qt tests)
@@ -175,13 +208,14 @@ tests/               pytest suite (runs headless on Linux, including the Qt test
 
 ## Testing notes
 
-466 tests, no network, no API keys, no audio hardware: the voice pipeline is driven with
-synthetic frames and fake recognisers, and the Qt tests run headless via the `minimal`
-platform plugin. Nothing is launched and nothing is downloaded during a test run.
+615 tests, no network, no API keys, no audio hardware: the voice pipeline is driven with
+synthetic frames and fake recognisers, the Gemini SDK is replaced by a fake client, and the
+Qt tests run headless via the `minimal` platform plugin. Nothing is launched, nothing is
+downloaded and nothing is sent anywhere during a test run.
 
 What still needs a real Windows 10 machine: microphone capture, recognition accuracy on
-live speech, Windows voice synthesis, global hotkey delivery, the tray icon, and
-Devanagari font shaping. See [docs/VOICE.md](docs/VOICE.md#12-verification-what-is-tested-and-what-is-not)
+live speech, Windows voice synthesis, global hotkey delivery, the tray icon, Devanagari
+font shaping, Credential Manager key storage, and a live Gemini round-trip. See [docs/VOICE.md](docs/VOICE.md#12-verification-what-is-tested-and-what-is-not)
 and [docs/UI.md](docs/UI.md#what-could-not-be-verified-on-linux).
 
 ## Contributing

@@ -14,7 +14,8 @@ licence. **Read the risk column before shipping commercially.**
 | onnxruntime | (dependency of the above) | MIT | ✅ | |
 | vosk (optional) | `>=0.3.45` | Apache-2.0 | ✅ | |
 | piper-tts (optional) | `>=1.2,<2` | GPL-3.0 | ⚠️ | GPL applies to the engine; linking it into a proprietary app has copyleft implications. Keep Piper in a **separate process** to isolate it, or replace with a permissive engine. |
-| pywin32 (optional) | `>=306` | PSF-2.0 | ✅ | Windows only |
+| pywin32 (optional) | `>=306` | PSF-2.0 | ✅ | Windows only; also backs the Credential Manager key store |
+| google-genai (optional, Phase 3) | `>=2.34,<3` | Apache-2.0 | ✅ | official Gemini SDK, imported lazily and only after consent; pulls `httpx`, `pydantic`, `google-auth` (all permissive) |
 | SQLite | bundled | Public domain | ✅ | |
 
 ## Model weights
@@ -48,7 +49,7 @@ one to keep visible if you redistribute a build that includes it.
 | Porcupine wake word | free tier requires an access key; paid beyond it → violates "zero paid APIs" |
 | openWakeWord (Phase 2) | a second neural runtime for one phrase; the VAD + short-burst ASR path already works with the model that is already loaded |
 | PyTorch-based ASR/TTS (MMS, VITS) | ~800 MB of wheel and ~250 MB RSS before a single word — violates the 4 GB target |
-| Google / Azure / OpenAI / ElevenLabs speech | cloud, paid, and sends your voice off-device |
+| Google / Azure / OpenAI / ElevenLabs **speech** | cloud, paid, and sends your voice off-device. (Gemini *answers* are different: text only, opt-in, free tier — see [docs/AI.md](docs/AI.md)) |
 | Electron / Chromium shells | 180–300 MB idle RAM |
 | PyTorch | 2 GB+ install for a model that ONNX Runtime runs in 130 MB |
 

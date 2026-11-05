@@ -235,9 +235,8 @@ class CommandRouter:
                 candidate = index + 1
                 if best is None or candidate < best:
                     best = candidate
-            elif cleaned.startswith(f"{verb} "):
-                if best is None or best > 0:
-                    best = 0
+            elif cleaned.startswith(f"{verb} ") and (best is None or best > 0):
+                best = 0
         return best
 
     @staticmethod

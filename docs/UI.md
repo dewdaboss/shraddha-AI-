@@ -42,7 +42,9 @@ says so in Hindi in the transcript and on the status line, instead of faking a t
 | Crossed-microphone button | mute / unmute; the icon and the status line both change |
 | Saying "सुनना बंद करो" | mutes the microphone and says so |
 | Any recognised sentence | appears as a normal user bubble, is answered and spoken |
-| Close the overlay | hides it; quitting is only via the tray |
+| Close the overlay | hides it; quitting is only via the tray; a cloud answer in flight is cancelled |
+| Ask something the rules cannot answer | one assistant bubble fills in as the cloud answer streams |
+| Type "क्लाउड AI चालू करो" / "क्लाउड AI बंद करो" | grants / revokes cloud consent (persisted to `config.json`) |
 
 Nothing in the UI ever quits the assistant except **Quit**: hiding a window is not exit,
 and that distinction is what lets the hotkey feel instant forever.
@@ -57,6 +59,22 @@ and that distinction is what lets the hotkey feel instant forever.
 | muted | `माइक्रोफ़ोन म्यूट है` | dim | crossed-microphone icon is checked |
 | wake mode armed | `श्रद्धा कहकर बुलाइए` | neon | no model is decoding between bursts |
 | error | the first line of the error, red | dim | the full sentence also lands in the chat as a system message |
+
+## Cloud answers on screen (Phase 3)
+
+Off by default, so the transcript looks exactly as it did in Phase 2 until the user opts
+in. When cloud AI is configured but consent is missing, the **first** unanswerable question
+adds one system message with the Hindi consent notice (never more than once per session —
+no nagging). Once consent is granted:
+
+* the answer arrives in a **single assistant bubble** appended chunk by chunk, with
+  "सोच रही हूँ…" as the placeholder until the first chunk lands;
+* the bubble is spoken once, when it is complete, so the voice never stutters mid-sentence;
+* cancelling (closing the overlay, quitting, or a second question overtaking it) keeps the
+  partial text and marks it with "…";
+* failures appear as one short Hindi sentence in the chat (a system message for "cloud AI
+  is off / no key / no consent", an assistant message for a real request failure). The
+  local rule engine keeps answering throughout.
 
 The status line is a `QLabel` with a `state` property (`idle` / `listening` / `muted` /
 `error`) styled from the theme's QSS, so the colours stay in one place.

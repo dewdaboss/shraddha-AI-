@@ -57,6 +57,7 @@ def test_doctor_reports_the_voice_stack(app_home: Path) -> None:
 def test_doctor_advises_llm_ram(app_home: Path) -> None:
     config = AppConfig()
     config.llm.enabled = True
+    config.llm.provider = "local"  # the RAM warning is about the local llama.cpp model
     report = run_doctor(config=config)
     if report.ram_total_gb is not None and report.ram_total_gb < 8:
         assert any("local LLM" in warning for warning in report.warnings)

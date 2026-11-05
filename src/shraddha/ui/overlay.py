@@ -204,6 +204,23 @@ class AssistantOverlay(QWidget):
     def append_message(self, text: str, role: str = "assistant"):
         return self._chat.add_message(text, role)
 
+    # --- streamed answers (Phase 3) -------------------------------------
+    @property
+    def is_streaming(self) -> bool:
+        return self._chat.is_streaming
+
+    def begin_stream_message(self, role: str = "assistant"):
+        return self._chat.begin_stream(role)
+
+    def stream_chunk(self, text: str) -> str:
+        return self._chat.append_chunk(text)
+
+    def finish_stream_message(self) -> str:
+        return self._chat.finish_stream()
+
+    def cancel_stream_message(self, suffix: str = " …") -> str:
+        return self._chat.cancel_stream(suffix)
+
     def clear_chat(self) -> None:
         self._chat.clear()
 

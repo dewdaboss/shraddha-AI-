@@ -21,7 +21,7 @@ licence. **Read the risk column before shipping commercially.**
 
 | Model | Licence | Commercial use | Notes |
 |---|---|---|---|
-| Hindi IndicConformer (int8 ONNX) | CC-BY-4.0 | ✅ | attribution required |
+| Hindi IndicConformer (int8 ONNX) | CC-BY-4.0 | ✅ | attribution required: "IndicConformer, AI4Bharat, CC-BY-4.0" — shown in `--doctor` and shipped in this file |
 | Vosk `vosk-model-small-hi-0.22` | Apache-2.0 | ✅ | |
 | Whisper / whisper.cpp models | MIT (OpenAI weights) | ✅ | |
 | Meta MMS-TTS Hindi | CC-BY-NC-4.0 | ❌ | **non-commercial only** |
@@ -30,6 +30,11 @@ licence. **Read the risk column before shipping commercially.**
 | Windows OneCore voices (Hemant / Kalpana) | licensed with Windows | ✅ (on licensed Windows) | cannot be redistributed — rely on the OS copy |
 | Qwen3 (Phase 6 LLM) | Apache-2.0 | ✅ | cleanest truly-free LLM option |
 | Gemma 3 (Phase 6 LLM) | Gemma Terms of Use | ⚠️ | free to use, not OSI-approved, has acceptable-use conditions |
+
+Phase 2 ships **Vosk small-hi** as the default recogniser precisely because it is
+Apache-2.0: a 42 MB model, a permissive licence, and no ONNX Runtime to redistribute.
+IndicConformer (CC-BY-4.0) is the opt-in upgrade, and the attribution line above is the
+one to keep visible if you redistribute a build that includes it.
 
 ## Assets and voices: the practical summary
 
@@ -41,6 +46,8 @@ licence. **Read the risk column before shipping commercially.**
 | Rejected | Reason |
 |---|---|
 | Porcupine wake word | free tier requires an access key; paid beyond it → violates "zero paid APIs" |
+| openWakeWord (Phase 2) | a second neural runtime for one phrase; the VAD + short-burst ASR path already works with the model that is already loaded |
+| PyTorch-based ASR/TTS (MMS, VITS) | ~800 MB of wheel and ~250 MB RSS before a single word — violates the 4 GB target |
 | Google / Azure / OpenAI / ElevenLabs speech | cloud, paid, and sends your voice off-device |
 | Electron / Chromium shells | 180–300 MB idle RAM |
 | PyTorch | 2 GB+ install for a model that ONNX Runtime runs in 130 MB |

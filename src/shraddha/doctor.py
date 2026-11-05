@@ -19,7 +19,9 @@ from shraddha import __version__
 from shraddha.config import AppConfig, ConfigError
 from shraddha.logging_setup import get_logger
 from shraddha.paths import Paths, get_paths
+from shraddha.speech import audio as audio_module
 from shraddha.speech import tts
+from shraddha.speech.engines import engine_report
 
 log = get_logger("doctor")
 
@@ -59,6 +61,9 @@ class DoctorReport:
     voices: list[str] = field(default_factory=list)
     engines: dict[str, bool] = field(default_factory=dict)
     selected_engine: str = tts.NONE
+    microphone: dict[str, object] = field(default_factory=dict)
+    asr_engines: dict[str, dict[str, object]] = field(default_factory=dict)
+    wake_mode: str = ""
     warnings: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, object]:
@@ -80,6 +85,9 @@ class DoctorReport:
             "voices": self.voices,
             "engines": self.engines,
             "selected_engine": self.selected_engine,
+            "microphone": self.microphone,
+            "asr_engines": self.asr_engines,
+            "wake_mode": self.wake_mode,
             "warnings": self.warnings,
         }
 
@@ -127,6 +135,15 @@ class DoctorReport:
         lines.append(
             f"  -> selected: {self.selected_engine} ({tts.describe_engine(self.selected_engine)})"
         )
+
+        lines += ["", "hindi voice input", "-" * 46]
+        mic_ok = bool(self.microphone.get("available"))
+        lines.append(f"  {mark[mic_ok]}  microphone: {self.microphone.get('reason') or 'ready'}")
+        for name, info in self.asr_engines.items():
+            ready = bool(info.get("ready"))
+            detail = "" if ready else f" - {info.get('message')}"
+            lines.append(f"  {mark[ready]}  engine {name}{detail}")
+        lines.append(f"       wake word mode: {self.wake_mode or 'unknown'}")
 
         if self.warnings:
             lines += ["", "warnings", "-" * 46, *(f"  ! {w}" for w in self.warnings)]
@@ -265,6 +282,11 @@ def run_doctor(paths: Paths | None = None, config: AppConfig | None = None) -> D
     report.engines = tts.available_engines(resolved.models, loaded.tts.piper_model)
     report.selected_engine = tts.select_engine(loaded.tts.engine, report.engines)
 
+    mic_ok, mic_reason = audio_module.availability()
+    report.microphone = {"available": mic_ok, "reason": mic_reason}
+    report.asr_engines = engine_report(resolved.models)
+    report.wake_mode = loaded.wake.mode
+
     _append_advice(report, loaded)
     return report
 
@@ -291,5 +313,9 @@ def _append_advice(report: DoctorReport, config: AppConfig) -> None:
         )
     if not report.extras.get("audio (sounddevice)"):
         report.warnings.append("microphone support not installed: pip install -e '.[audio]'")
-    if not (report.extras.get("asr (sherpa-onnx)") or report.extras.get("asr-vosk (vosk)")):
-        report.warnings.append("no ASR engine installed: pip install -e '.[asr]'")
+    if not any(bool(info.get("ready")) for info in report.asr_engines.values()):
+        report.warnings.append(
+            "no Hindi speech model is ready: python scripts/fetch_models.py --set asr-light"
+        )
+    if not report.microphone.get("available"):
+        report.warnings.append(f"microphone unavailable: {report.microphone.get('reason')}")

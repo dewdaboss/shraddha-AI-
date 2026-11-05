@@ -74,7 +74,7 @@ Mitigations that keep Python acceptable:
 | `instance.py` | exclusive lock file with stale-PID recovery | assume the OS cleans up after a crash |
 | `hotkey.py` | parse "ctrl+alt+s" into Win32 modifiers + virtual key | call ctypes |
 | `assistant.py` | deterministic Hindi/Hinglish replies + the Phase 4/6 seam | touch the network |
-| `speech/asr.py` | recogniser protocol + honest "not yet" placeholder | load a model at import |
+| `speech/asr.py` | recogniser protocol + honest "not yet" placeholder (Phase 1 seam) | load a model at import |
 | `ui/theme.py` | design tokens and stylesheet (Qt-free) | import Qt |
 | `ui/overlay.py` | the floating card: chat, input, mic, animation | contain business logic |
 | `ui/chat.py` | transcript view, bounded to 200 bubbles | parse markup |
@@ -87,16 +87,33 @@ Mitigations that keep Python acceptable:
 | `core/doctor.py` | capability detection (RAM, voices, models, extras) | mutate state |
 | `storage/db.py` | SQLite schema + versioned migrations | hold long-lived connections |
 | `speech/tts.py` | engine registry + selection policy | block the caller's UI thread |
-| `speech/asr.py` | (Phase 2) streaming recognition over a child process | load a model at import |
-| `intent/router.py` | (Phase 4) Hindi/Hinglish grammar → intent | call an LLM for known intents |
-| `ui/` | (Phase 1) tray, overlay, settings | contain business logic |
+| `speech/vad.py` | energy VAD + utterance segmenter (pure Python, no numpy) | know about ASR |
+| `speech/audio.py` | PortAudio capture, device list, typed microphone errors | touch Qt |
+| `speech/engines/base.py` | `OfflineRecognizer` protocol, `AsrError`, guarded `load()` | choose an engine |
+| `speech/engines/vosk_engine.py` | Vosk small-hi: model discovery, decode | run in the GUI thread |
+| `speech/engines/sherpa_engine.py` | IndicConformer int8 via sherpa-onnx | run in the GUI thread |
+| `speech/engines/__init__.py` | engine registry + `auto` policy + doctor report | import a model at import time |
+| `speech/wake.py` | wake-phrase matching (Latin + Devanagari, bounded edit distance) | run ASR |
+| `speech/service.py` | pipeline: capture → VAD → ASR → wake gate → events; idle unload | touch Qt or the file system |
+| `commands/apps.py` | the allowlists: apps, URLs, Windows known folders | execute anything |
+| `commands/router.py` | Hindi/Hinglish sentence → validated intent (pure) | launch a process |
+| `commands/actions.py` | **the only module that launches a process or opens a folder** | trust a transcript |
+| `commands/confirmation.py` | spoken yes/no gate for sensitive actions | assume silence is consent |
+| `ui/voice.py` | Qt bridge: worker thread → signals, no polling timers | decode audio on the GUI thread |
+| `ui/app.py` | wiring: controller, lifecycle, persistence, command dispatch | own layout code |
 
 ## 4. Threading and CPU discipline
 
-- **One audio callback thread** (PortAudio) writing into a pre-allocated ring buffer.
-  No allocations per frame, no `numpy.append`.
-- **One ASR thread** blocked on a queue when nobody speaks. VAD runs before ASR, so the
-  recogniser only sees frames that contain speech.
+- **One audio callback thread** (PortAudio) whose only job is `queue.put_nowait(frame)`
+  into a bounded queue. No allocations, no resize, no numpy. A full queue drops a frame
+  rather than stalling the device.
+- **One voice worker thread** (`shraddha-voice`) owned by `ui/voice.py`. It blocks on
+  that queue with a 100 ms timeout, runs VAD, and runs the ASR. When the queue is empty
+  it calls `tick()`, which is where the idle model unload happens — so even that work is
+  off the GUI thread.
+- **VAD runs before ASR**, always: the recogniser only ever sees a complete utterance,
+  which is why a 42 MB model can decode in a few hundred milliseconds and why the
+  microphone can stay open in wake mode without burning CPU.
 - **No polling.** No `while True: sleep(0.1)`. UI work is driven by Qt signals; timers,
   if unavoidable, are ≥ 1 s and coalesced.
 - **Thread caps:** `OMP_NUM_THREADS=2`, ONNX `intra_op_num_threads=2`,
@@ -106,8 +123,12 @@ Mitigations that keep Python acceptable:
 
 ## 5. Latency budget (hotkey → first sound)
 
+Measured in-budget values are from `scripts/measure_resources.py`; the voice figures are
+estimates for a 4-core Windows 10 laptop and are the ones to re-measure on real hardware.
+
 | Stage | Budget |
 |---|---|
+| Process spawn → window ready | **184 ms measured** (budget 2 s) |
 | Hotkey → window shown | 50 ms |
 | Mic warm-up + VAD arm | 100 ms |
 | End of speech → transcript | 250–600 ms (int8 streaming ASR, ~1 s utterances) |
@@ -115,7 +136,27 @@ Mitigations that keep Python acceptable:
 | TTS first audio (OneCore) | < 120 ms |
 | TTS first audio (Piper) | 300–700 ms, incl. one-time 6 s model load |
 
-## 6. Failure and privacy rules
+## 6. The voice pipeline (Phase 2)
+
+`speech/` never imports `subprocess`; `commands/` never imports a microphone. That split
+is the enforcement mechanism for "never execute recognised speech directly".
+
+| Stage | Module | Thread | Failure behaviour |
+|---|---|---|---|
+| capture | `speech/audio.py` | PortAudio | `MicrophoneError` → Hindi notice, text chat keeps working |
+| detect speech | `speech/vad.py` | worker | never fails: pure arithmetic |
+| segment | `speech/vad.py` | worker | clicks < 250 ms dropped; 15 s hard cap |
+| recognise | `speech/engines/` | worker | `AsrError` → user message + hint; pipeline survives |
+| wake gate | `speech/wake.py` | worker | unmatched speech → `ignored` event, not a command |
+| route | `commands/router.py` | GUI (pure, <1 ms) | unknown → chat layer answers |
+| confirm | `commands/confirmation.py` | GUI | unclear → question stays open |
+| act | `commands/actions.py` | GUI | not allowlisted → refusal, nothing runs |
+
+Memory policy, in one sentence: **a model exists only between "user starts speaking" and
+`asr.idle_unload_s` after the last utterance**, and the same rule applies to wake mode with
+its own (shorter) timer.
+
+## 7. Failure and privacy rules
 
 - **Offline is normal, not an error state.** No feature may require the network except
   the one-time model download.
@@ -126,7 +167,7 @@ Mitigations that keep Python acceptable:
   fall back to the lighter engine. If TTS fails, show the text.
 - **Single instance** via a named mutex / lock file — a second launch focuses the first.
 
-## 7. Packaging
+## 8. Packaging
 
 | Concern | Choice |
 |---|---|

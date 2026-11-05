@@ -65,6 +65,7 @@ class AssistantOverlay(QWidget):
 
     submitted = Signal(str)
     mic_toggled = Signal(bool)
+    mute_toggled = Signal(bool)
     closed = Signal()
 
     def __init__(
@@ -125,6 +126,24 @@ class AssistantOverlay(QWidget):
 
         self._chat = ChatView(parent=self)
 
+        self._status = QLabel("तैयार - आवाज़ के लिए माइक दबाइए", self)
+        self._status.setObjectName("StatusLine")
+        self._status.setProperty("state", "idle")
+        self._partial = QLabel("", self)
+        self._partial.setObjectName("Partial")
+        self._partial.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        status_row = QHBoxLayout()
+        status_row.setContentsMargins(2, 0, 2, 0)
+        status_row.setSpacing(8)
+        status_row.addWidget(self._status, 0, Qt.AlignmentFlag.AlignVCenter)
+        status_row.addWidget(self._partial, 1, Qt.AlignmentFlag.AlignVCenter)
+
+        self._mute = IconButton("mic", "माइक्रोफ़ोन म्यूट / अनम्यूट", 30, self, object_name="MuteButton")
+        self._mute.setCheckable(True)
+        self._mute.setToolTip("माइक्रोफ़ोन म्यूट कीजिए")
+        self._mute.toggled.connect(self._on_mute_clicked)
+
         self._mic = MicButton(self)
         self._mic.toggled.connect(self.mic_toggled.emit)
 
@@ -142,6 +161,7 @@ class AssistantOverlay(QWidget):
         input_row = QHBoxLayout()
         input_row.setContentsMargins(0, 0, 0, 0)
         input_row.setSpacing(9)
+        input_row.addWidget(self._mute, 0, Qt.AlignmentFlag.AlignVCenter)
         input_row.addWidget(self._mic, 0, Qt.AlignmentFlag.AlignVCenter)
         input_row.addWidget(self._input, 1)
         input_row.addWidget(self._send, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -151,6 +171,7 @@ class AssistantOverlay(QWidget):
         root.setSpacing(12)
         root.addLayout(header)
         root.addWidget(self._chat, 1)
+        root.addLayout(status_row)
         root.addLayout(input_row)
 
     def _build_animations(self) -> None:
@@ -192,6 +213,45 @@ class AssistantOverlay(QWidget):
     def set_hint(self, text: str) -> None:
         self._hint.setText(text.upper())
 
+    @property
+    def mute_button(self) -> IconButton:
+        return self._mute
+
+    @property
+    def status_text(self) -> str:
+        return self._status.text()
+
+    @property
+    def partial_text(self) -> str:
+        return self._partial.text()
+
+    def set_voice_status(self, text: str, state: str = "idle") -> None:
+        """Status line: what the assistant is doing right now."""
+        self._status.setText(text)
+        if self._status.property("state") != state:
+            self._status.setProperty("state", state)
+            # Re-polish so the [state="..."] QSS selector takes effect.
+            self._status.style().unpolish(self._status)
+            self._status.style().polish(self._status)
+
+    def set_partial(self, text: str) -> None:
+        """Live, unconfirmed transcript while the user is still speaking."""
+        self._partial.setText(text)
+
+    def set_muted(self, muted: bool) -> None:
+        """Reflect microphone mute state without emitting ``mute_toggled`` again."""
+        self._mute.blockSignals(True)
+        self._mute.setChecked(muted)
+        self._mute.blockSignals(False)
+        self._mute.set_kind("mic_off" if muted else "mic")
+        self._mute.setToolTip("माइक्रोफ़ोन चालू कीजिए" if muted else "माइक्रोफ़ोन म्यूट कीजिए")
+        if muted:
+            self.set_voice_status("माइक्रोफ़ोन म्यूट है", "muted")
+
+    def _on_mute_clicked(self, muted: bool) -> None:
+        self.set_muted(muted)
+        self.mute_toggled.emit(muted)
+
     def set_listening(self, listening: bool) -> None:
         """Reflect recognition state without emitting ``mic_toggled`` again."""
         self._mic.blockSignals(True)
@@ -199,6 +259,12 @@ class AssistantOverlay(QWidget):
         self._mic.blockSignals(False)
         self._dot.set_state("listening" if listening else "idle")
         self.set_status("सुन रही हूँ…" if listening else SUBTITLE)
+        self.set_voice_status(
+            "सुन रही हूँ… बोलिए" if listening else "तैयार - आवाज़ के लिए माइक दबाइए",
+            "listening" if listening else "idle",
+        )
+        if not listening:
+            self.set_partial("")
 
     def submit_text(self, text: str) -> None:
         """Programmatic equivalent of typing and pressing Enter (used by tests)."""

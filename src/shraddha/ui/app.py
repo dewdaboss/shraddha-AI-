@@ -1,22 +1,35 @@
-"""Application wiring: tray + overlay + hotkey + single instance + assistant.
+"""Application wiring: tray + overlay + hotkey + voice pipeline + commands.
 
-The controller below is deliberately constructor-injectable (paths, config) so tests can
-build the whole wiring against a temporary home directory without touching the running
-assistant or the real event loop.
+The controller is constructor-injectable (paths, config, executor) so the entire wiring
+can be tested against a temporary home directory with a fake microphone, a fake
+recogniser and a dry-run executor - no audio device, no model, and nothing launched.
 """
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 
 from shraddha import APP_NAME, __version__
-from shraddha.assistant import Assistant
+from shraddha.assistant import KIND_SYSTEM, Assistant
+from shraddha.commands import (
+    INTENT_INFO_DATE,
+    INTENT_INFO_TIME,
+    INTENT_UNKNOWN,
+    INTENT_VOICE_STOP,
+    INTENT_VOICE_SWITCH,
+    ActionExecutor,
+    CommandRouter,
+    ConfirmationGate,
+    ConfirmationOutcome,
+)
 from shraddha.config import AppConfig, ConfigError
 from shraddha.instance import SingleInstanceLock
 from shraddha.logging_setup import get_logger, setup_logging
 from shraddha.paths import Paths, get_paths
-from shraddha.speech import asr
+from shraddha.speech import tts as tts_module
+from shraddha.speech.service import VoiceService, VoiceState
 from shraddha.storage import Database
 
 log = get_logger("ui.app")
@@ -31,6 +44,12 @@ WELCOME_TEXT = (
 )
 HISTORY_TURNS = 12
 
+STATUS_READY = "तैयार - आवाज़ के लिए माइक दबाइए"
+STATUS_LISTENING = "सुन रही हूँ… बोलिए"
+STATUS_WAKE = "श्रद्धा कहकर बुलाइए"
+STATUS_THINKING = "सोच रही हूँ…"
+STATUS_MUTED = "माइक्रोफ़ोन म्यूट है"
+
 
 class AssistantController:
     """Glue object. One instance per process."""
@@ -41,19 +60,22 @@ class AssistantController:
         config: AppConfig | None = None,
         use_tray: bool = True,
         server_name: str | None = None,
+        capture_factory=None,
+        recognizer_factory=None,
+        executor: ActionExecutor | None = None,
+        tts_engine=None,
     ) -> None:
         self.paths = paths or get_paths().ensure()
         self.config = config or AppConfig.load(self.paths.config_file)
         self.assistant = Assistant(language=self.config.ui.language)
-        self.recognizer = asr.create_recognizer()
         self.db = self._open_database()
 
         from shraddha.ui.hotkey import GlobalHotkey
         from shraddha.ui.ipc import ActivationServer
         from shraddha.ui.overlay import AssistantOverlay
         from shraddha.ui.tray import TrayController
+        from shraddha.ui.voice import VoiceBridge
 
-        self._mic_hint_shown = False
         self.hotkey = GlobalHotkey(self.config.ui.hotkey)
         self.overlay = AssistantOverlay(
             hotkey_label=self.hotkey.label, always_on_top=self.config.ui.always_on_top
@@ -62,22 +84,57 @@ class AssistantController:
         self.server = ActivationServer(server_name) if server_name else ActivationServer()
         self._lock = SingleInstanceLock(self.paths.lock_file)
 
+        # --- voice pipeline (Phase 2) -------------------------------------
+        self.voice = VoiceService(
+            config=self.config,
+            models_dir=self.paths.models,
+            capture_factory=capture_factory,
+            recognizer_factory=recognizer_factory,
+        )
+        self.bridge = VoiceBridge(self.voice)
+        self.router = CommandRouter(
+            allow_power_actions=self.config.commands.allow_power_actions,
+            enabled=self.config.commands.enabled,
+        )
+        self.executor = executor or ActionExecutor(
+            allow_power_actions=self.config.commands.allow_power_actions
+        )
+        self.confirmation = ConfirmationGate()
+        self.tts = tts_engine or tts_module.create_engine(
+            engine=self.config.tts.engine,
+            voice=self.config.tts.voice,
+            rate=self.config.tts.rate,
+            volume=self.config.tts.volume,
+            configured_piper=self.config.tts.piper_model,
+            models_dir=self.paths.models,
+        )
+
+        # --- signals -------------------------------------------------------
         self.overlay.submitted.connect(self.on_submitted)
         self.overlay.mic_toggled.connect(self.on_mic_toggled)
+        self.overlay.mute_toggled.connect(self.on_mute_toggled)
         self.overlay.closed.connect(self._sync_tray_hidden)
         self.server.activated.connect(self.on_activation_requested)
+        self.bridge.final.connect(self.on_voice_final)
+        self.bridge.partial.connect(self.overlay.set_partial)
+        self.bridge.state_changed.connect(self.on_voice_state)
+        self.bridge.error.connect(self.on_voice_error)
+        self.bridge.wake.connect(self.on_wake)
+        self.bridge.muted.connect(self.on_mic_muted)
         if self.tray is not None:
             self.tray.activated.connect(self.on_tray_activated)
             self.tray.clear_requested.connect(self.on_clear_chat)
             self.tray.quit_requested.connect(self.on_quit)
 
+        self._shut_down = False
         self._restore_history()
+        self._announce_capabilities()
 
+    # ------------------------------------------------------------------ setup
     @property
     def has_lock(self) -> bool:
         return self._lock.is_held
 
-    # ------------------------------------------------------------------ setup
     def _open_database(self):
         try:
             return Database(self.paths.db_file)
@@ -95,6 +152,16 @@ class AssistantController:
         except Exception as exc:  # a corrupt database must not block startup
             log.warning("could not restore history: %s", exc)
 
+    def _announce_capabilities(self) -> None:
+        """Tell the user honestly what voice input can do on *this* machine."""
+        mic_ok, mic_reason = self.voice.mic_status()
+        if not mic_ok:
+            self.overlay.append_message(f"आवाज़ से सुनना उपलब्ध नहीं: {mic_reason}", KIND_SYSTEM)
+            self.overlay.set_voice_status("माइक उपलब्ध नहीं - टाइप कीजिए", "error")
+            return
+        if self.config.wake.mode == "push_to_talk":
+            self.overlay.set_voice_status(STATUS_READY, "idle")
+
     def start(self, show_overlay: bool = True) -> bool:
         """Take ownership of the session. False when another instance is running."""
         if not self._lock.acquire():
@@ -106,50 +173,191 @@ class AssistantController:
             self.tray.show()
         if show_overlay:
             self.overlay.show_overlay()
+        if self.config.wake.mode == "phrase":
+            self.overlay.set_voice_status(STATUS_WAKE, "listening")
+            self.bridge.start(mode="phrase")
         log.info("%s AI %s ready", APP_NAME, __version__)
         return True
 
     def shutdown(self) -> None:
+        """Idempotent: the tray, the window manager and tests may all ask for it."""
+        if self._shut_down:
+            return
+        self._shut_down = True
         self.hotkey.unregister()
         self.server.stop()
+        self.bridge.shutdown()
+        self._detach_bridge()
+        with_tts = getattr(self.tts, "close", None)
+        if callable(with_tts):
+            with_tts()
         if self.tray is not None:
             self.tray.hide()
         self.overlay.hide()
-        self.recognizer.close()
         self._lock.release()
         log.info("shutdown complete")
 
-    # ------------------------------------------------------------------ slots
+    # -------------------------------------------------------------- text input
     def on_submitted(self, text: str) -> None:
-        """A message arrived from the input field."""
+        """A message arrived from the input field (typed)."""
+        self._respond_to(text, source="typed")
+
+    # ------------------------------------------------------------- voice input
+    def on_voice_final(self, text: str) -> None:
+        """A command was recognised from speech."""
+        text = text.strip()
+        if not text:
+            return
+        log.info("voice command: %r", text)
+        self.overlay.set_partial("")
+        self._respond_to(text, source="voice")
+
+    def on_voice_state(self, state: str) -> None:
+        listening = state == VoiceState.LISTENING.value
+        self.overlay.set_listening(listening)
+        if state == VoiceState.PROCESSING.value:
+            self.overlay.set_voice_status(STATUS_THINKING, "listening")
+        elif state == VoiceState.MUTED.value:
+            self.overlay.set_muted(True)
+        elif state == VoiceState.IDLE.value:
+            self.overlay.set_voice_status(STATUS_READY, "idle")
+
+    def on_voice_error(self, message: str) -> None:
+        log.warning("voice error: %s", message)
+        self.overlay.set_listening(False)  # resets the status line to "ready"...
+        self.overlay.set_voice_status(message.splitlines()[0][:80], "error")  # ...so report after
+        self.overlay.append_message(message, KIND_SYSTEM)
+        if self.tray is not None:
+            self.tray.set_listening(False)
+
+    def on_wake(self) -> None:
+        self.overlay.set_voice_status("हाँ, बोलिए…", "listening")
+
+    def on_mic_muted(self, muted: bool) -> None:
+        self.overlay.set_muted(muted)
+        if self.tray is not None:
+            self.tray.set_listening(False)
+        if not muted:
+            self.overlay.set_voice_status(STATUS_READY, "idle")
+
+    def on_mic_toggled(self, listening: bool) -> None:
+        """The microphone button: push-to-talk."""
+        if listening:
+            self.overlay.set_voice_status("माइक खोल रही हूँ…", "listening")
+            self.bridge.start(mode="push_to_talk")
+            if self.tray is not None:
+                self.tray.set_listening(True)
+        else:
+            self.bridge.stop()
+            self.overlay.set_listening(False)
+            self.overlay.set_voice_status(STATUS_READY, "idle")
+            if self.tray is not None:
+                self.tray.set_listening(False)
+
+    def on_mute_toggled(self, muted: bool) -> None:
+        self.bridge.set_muted(muted)
+        if muted:
+            # Muting always ends the listening session, so the microphone button can
+            # never stay lit while nothing is being recorded.
+            self._end_listening(muted=True)
+
+    def _end_listening(self, muted: bool) -> None:
+        """Stop the worker and settle the UI into one honest state."""
+        self.bridge.stop()
+        self.overlay.set_listening(False)  # also unchecks the microphone button
+        if muted:
+            self.overlay.set_muted(True)  # ...and re-applies the muted status line
+        if self.tray is not None:
+            self.tray.set_listening(False)
+
+    # ------------------------------------------------------------- the brain
+    def _respond_to(self, text: str, source: str) -> None:
         self.overlay.append_message(text, "user")
         self._persist("user", text)
 
-        reply = self.assistant.respond(text)
-        self.overlay.append_message(reply.text, reply.kind)
-        self._persist(reply.kind, reply.text)
-        log.debug("intent=%s chars=%s", reply.intent, len(reply.text))
+        reply = self.handle_text(text)
+        self.overlay.append_message(reply, "assistant")
+        self._persist("assistant", reply)
+        self._speak(reply)
+        log.debug("%s command handled: %d chars in, %d chars out", source, len(text), len(reply))
 
-    def on_mic_toggled(self, listening: bool) -> None:
-        """Microphone button pressed. Phase 2 replaces the placeholder recogniser."""
-        if listening and not self.recognizer.is_available:
-            self.overlay.set_listening(False)
-            if not self._mic_hint_shown:
-                self._mic_hint_shown = True
-                self.overlay.append_message(self.recognizer.unavailable_reason, "system")
-                log.info("microphone pressed but no recogniser is installed yet")
+    def handle_text(self, text: str) -> str:
+        """Route one utterance: confirmation -> command -> assistant fallback."""
+        if self.confirmation.is_waiting:
+            outcome, approved = self.confirmation.resolve(text)
+            if outcome is ConfirmationOutcome.APPROVED and approved is not None:
+                result = self.executor.execute(approved)
+                return result.message or approved.spoken or "ठीक है।"
+            if outcome is ConfirmationOutcome.DECLINED:
+                return "ठीक है, रद्द कर दिया।"
+            if outcome is ConfirmationOutcome.UNCLEAR:
+                return "कृपया 'हाँ' या 'नहीं' कहिए।"
+
+        command = self.router.route(text)
+
+        if command.needs_confirmation:
+            self.confirmation.request(command)
+            return command.spoken
+
+        if command.intent == INTENT_UNKNOWN:
+            # The router already knows the honest Hindi answer for e.g. "photoshop kholo".
+            return command.spoken or self.assistant.respond(text).text
+
+        if command.intent in (INTENT_INFO_DATE, INTENT_INFO_TIME):
+            return self.assistant.respond(text).text
+
+        if command.intent == INTENT_VOICE_STOP:
+            self._stop_listening()
+            return command.spoken
+
+        if command.intent == INTENT_VOICE_SWITCH:
+            return self._switch_voice()
+
+        result = self.executor.execute(command)
+        if not result.ok and result.detail == "not_found" and command.spoken:
+            return f"{result.message}"
+        return result.message or command.spoken or "ठीक है।"
+
+    def _stop_listening(self) -> None:
+        self.bridge.set_muted(True)
+        self._end_listening(muted=True)
+
+    def _switch_voice(self) -> str:
+        options = tts_module.voice_options(self.config.tts.piper_model, self.paths.models)
+        chosen = tts_module.next_voice(self.config.tts.voice, options)
+        if chosen is None:
+            return (
+                "इस कंप्यूटर पर कोई हिन्दी आवाज़ नहीं मिली। Windows में हिन्दी भाषा जोड़िए "
+                "या Piper आवाज़ डाउनलोड कीजिए।"
+            )
+        self.config.tts.voice = chosen
+        self._save_config()
+        self.tts = tts_module.create_engine(
+            engine=self.config.tts.engine,
+            voice=chosen,
+            rate=self.config.tts.rate,
+            volume=self.config.tts.volume,
+            configured_piper=self.config.tts.piper_model,
+            models_dir=self.paths.models,
+        )
+        return f"अब मैं {chosen} आवाज़ में बोलूँगी।"
+
+    def _speak(self, text: str) -> None:
+        if not self.config.tts.speak_replies:
             return
+        tts_module.speak_safely(self.tts, text)
 
-        started = self.recognizer.start() if listening else bool(self.recognizer.stop())
-        self.overlay.set_listening(listening and started)
-        if self.tray is not None:
-            self.tray.set_listening(listening and started)
+    def _save_config(self) -> None:
+        try:
+            self.config.save(self.paths.config_file)
+        except OSError as exc:
+            log.warning("could not save settings: %s", exc)
 
+    # ------------------------------------------------------------------ slots
     def on_tray_activated(self) -> None:
         self.overlay.toggle()
 
     def on_activation_requested(self) -> None:
-        """A second launch asked us to come forward."""
         self.overlay.show_overlay()
 
     def on_clear_chat(self) -> None:
@@ -169,6 +377,24 @@ class AssistantController:
             application.quit()
 
     # --------------------------------------------------------------- internals
+    def _detach_bridge(self) -> None:
+        """Break the controller <-> bridge signal cycle before Qt tears anything down.
+
+        Without this the bridge (a QObject) can be collected *after* the QApplication is
+        gone, which aborts the interpreter on some PySide6 builds.
+        """
+        for signal, slot in (
+            (self.bridge.final, self.on_voice_final),
+            (self.bridge.partial, self.overlay.set_partial),
+            (self.bridge.state_changed, self.on_voice_state),
+            (self.bridge.error, self.on_voice_error),
+            (self.bridge.wake, self.on_wake),
+            (self.bridge.muted, self.on_mic_muted),
+        ):
+            with contextlib.suppress(RuntimeError, TypeError):
+                signal.disconnect(slot)
+        self.bridge.deleteLater()
+
     def _sync_tray_hidden(self) -> None:
         if self.tray is not None:
             self.tray.set_listening(False)
@@ -244,7 +470,6 @@ def run_ui(
         return EXIT_ALREADY_RUNNING
 
     if smoke_seconds is not None:
-        # Internal measurement hook: prove the UI is up, then exit cleanly.
         print("SHRADDHA_UI_READY", flush=True)
         QTimer.singleShot(int(smoke_seconds * 1000), controller.on_quit)
 

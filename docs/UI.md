@@ -1,8 +1,12 @@
 # Interface
 
-Phase 1 delivers the shell: a tray icon, a floating overlay, a global hotkey and a text
-command loop. The microphone button exists and is wired, but speech recognition itself is
-Phase 2 — the UI says so honestly rather than faking a transcript.
+Phase 1 delivered the shell: a tray icon, a floating overlay, a global hotkey and a text
+command loop. Phase 2 connects the microphone for real and adds a status line, a live
+partial transcript and a mute control. The voice pipeline itself is documented in
+[VOICE.md](VOICE.md); this file is about what the user sees and touches.
+
+When voice input cannot work — no sounddevice, no model, no microphone — the interface
+says so in Hindi in the transcript and on the status line, instead of faking a transcript.
 
 ## What the user sees
 
@@ -13,15 +17,15 @@ Phase 2 — the UI says so honestly rather than faking a transcript.
 │                                                                      │
 │  ┌────────────────────────┐                                          │
 │  │ नमस्ते! मैं श्रद्धा हूँ। │                       ┌────────────────┐ │
-│  └────────────────────────┘                       │ समय क्या है?   │ │  ← user: green tint
+│  └────────────────────────┘                       │ क्रोम खोलो      │ │  ← user: green tint
 │                                                   └────────────────┘ │
 │  ┌────────────────────────┐                                          │
-│  │ अभी समय है 09:30।       │                                          │
+│  │ Chrome खोल रही हूँ।      │                                          │
 │  └────────────────────────┘                                          │
-│                     voice is not ready yet (Phase 2)                 │  ← system: centred, dim
-│                                                                      │
-│  ( ◉ )  [ हिन्दी में लिखिए… ]                                  ( ➤ ) │
+│  सुन रही हूँ… बोलिए                          क्रोम खो…                 │  ← status · partial
+│  ( ⃠ )  ( ◉ )  [ हिन्दी में लिखिए… ]                            ( ➤ ) │
 └──────────────────────────────────────────────────────────────────────┘
+   mute    mic
 ```
 
 ## Interactions
@@ -34,11 +38,28 @@ Phase 2 — the UI says so honestly rather than faking a transcript.
 | `Enter` in the input | send |
 | `Esc` | hide the overlay (the app keeps running) |
 | Drag the header | move the window; remembered for the session |
-| Microphone button | toggles the listening state; explains that Phase 2 is required |
+| Microphone button | start / stop listening (push-to-talk) |
+| Crossed-microphone button | mute / unmute; the icon and the status line both change |
+| Saying "सुनना बंद करो" | mutes the microphone and says so |
+| Any recognised sentence | appears as a normal user bubble, is answered and spoken |
 | Close the overlay | hides it; quitting is only via the tray |
 
 Nothing in the UI ever quits the assistant except **Quit**: hiding a window is not exit,
 and that distinction is what lets the hotkey feel instant forever.
+
+## Voice states on screen
+
+| State | Status line | Dot | Notes |
+|---|---|---|---|
+| idle | `तैयार — आवाज़ के लिए माइक दबाइए` | dim | nothing is recorded |
+| listening | `सुन रही हूँ… बोलिए` | neon | partial transcript appears on the right |
+| decoding | `सोच रही हूँ…` | neon | ASR runs on the worker thread |
+| muted | `माइक्रोफ़ोन म्यूट है` | dim | crossed-microphone icon is checked |
+| wake mode armed | `श्रद्धा कहकर बुलाइए` | neon | no model is decoding between bursts |
+| error | the first line of the error, red | dim | the full sentence also lands in the chat as a system message |
+
+The status line is a `QLabel` with a `state` property (`idle` / `listening` / `muted` /
+`error`) styled from the theme's QSS, so the colours stay in one place.
 
 ## Design tokens
 

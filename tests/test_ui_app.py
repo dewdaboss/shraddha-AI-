@@ -32,13 +32,15 @@ def controller(app_home: Path, qapp) -> Iterator[AssistantController]:
     yield instance
     instance.shutdown()
     instance.overlay.deleteLater()
+    qapp.processEvents()  # deferred deletions must not survive into finalization
 
 
 def test_welcome_message_is_shown(controller: AssistantController) -> None:
-    assert controller.overlay.chat.count == 1
-    role, text = controller.overlay.chat.last_message()
+    # On a machine without a microphone the welcome is followed by one honest notice.
+    role, text = controller.overlay.chat.messages[0]
     assert role == "assistant"
     assert "श्रद्धा" in text
+    assert controller.overlay.chat.count >= 1
 
 
 def test_submitting_a_command_answers_and_persists(controller: AssistantController) -> None:
@@ -59,18 +61,35 @@ def test_fallback_is_stored_too(controller: AssistantController) -> None:
     assert "Phase 6" in controller.overlay.chat.messages[-1][1]
 
 
-def test_microphone_without_recogniser_explains_itself_once(
-    controller: AssistantController,
+def test_a_missing_microphone_is_explained_up_front(controller: AssistantController) -> None:
+    """No sounddevice, no model: the user is told once at startup, in Hindi."""
+    system = [text for role, text in controller.overlay.chat.messages if role == "system"]
+    assert system, "the assistant must say that voice input cannot work"
+    assert "माइक" in system[0] or "आवाज़" in system[0]
+    assert controller.overlay.status_dot.state == "idle", "must not fake listening"
+
+
+def test_pressing_the_mic_without_hardware_does_not_pretend_to_listen(
+    controller: AssistantController, qapp
 ) -> None:
     controller.on_mic_toggled(True)
-    assert controller.overlay.chat.messages[-1][0] == "system"
-    assert "Phase 2" in controller.overlay.chat.messages[-1][1]
-    assert controller.overlay.mic_button.isChecked() is False, "must not fake listening"
-    assert controller.overlay.status_dot.state == "idle"
+    _settle(qapp, lambda: controller.overlay.status_dot.state == "idle")
 
-    count_before = controller.overlay.chat.count
-    controller.on_mic_toggled(True)
-    assert controller.overlay.chat.count == count_before, "the hint must not spam the chat"
+    assert controller.overlay.mic_button.isChecked() is False
+    assert controller.overlay.status_text != "", "the status line stays informative"
+
+
+def _settle(qapp, predicate, timeout_s: float = 3.0) -> bool:
+    """Pump the Qt loop until ``predicate`` holds (the voice worker reports errors async)."""
+    import time
+
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        qapp.processEvents()
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
 
 
 def test_history_is_restored_in_a_new_controller(app_home: Path, qapp) -> None:

@@ -228,6 +228,26 @@ def stylesheet(palette: Palette = PALETTE) -> str:
         background: rgba(0, 255, 156, 0.12);
     }}
 
+    QLabel#StatusLine {{
+        font-size: 11px;
+        color: {palette.text_faint};
+        padding: 0px 4px;
+    }}
+
+    QLabel#StatusLine[state="listening"] {{
+        color: {palette.neon};
+    }}
+
+    QLabel#StatusLine[state="error"] {{
+        color: {palette.danger};
+    }}
+
+    QLabel#Partial {{
+        font-size: 12px;
+        color: {palette.text_dim};
+        padding: 0px 4px;
+    }}
+
     QToolTip {{
         background: {palette.surface_raised};
         color: {palette.text};

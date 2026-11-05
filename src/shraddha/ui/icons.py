@@ -81,6 +81,17 @@ def mic_pixmap(size: int = 22, colour: str | None = None) -> QPixmap:
     return pixmap
 
 
+def mic_off_pixmap(size: int = 22, colour: str | None = None) -> QPixmap:
+    """Microphone with a slash: muted."""
+    pixmap = mic_pixmap(size, colour)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    painter.setPen(_pen(colour or PALETTE.danger, max(1.6, size * 0.085)))
+    painter.drawLine(QPointF(size * 0.18, size * 0.18), QPointF(size * 0.82, size * 0.82))
+    painter.end()
+    return pixmap
+
+
 def send_pixmap(size: int = 20, colour: str | None = None) -> QPixmap:
     """Paper plane, pointing right."""
     pixmap, painter = _canvas(size)

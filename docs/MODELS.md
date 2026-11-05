@@ -1,8 +1,9 @@
 # Model Provisioning
 
 Models are **never committed** to this repository (`.gitignore` blocks `*.onnx`, `*.gguf`,
-`*.bin`). They are downloaded on demand, pinned by checksum, into
-`%LOCALAPPDATA%\Shraddha\models\`.
+`*.bin`). They are downloaded on demand into `%LOCALAPPDATA%\Shraddha\models\`
+(`SHRADDHA_HOME` overrides the root). Archives are unpacked and removed automatically, and
+a member that would escape the models folder is refused.
 
 Use the helper:
 
@@ -18,10 +19,14 @@ python scripts/fetch_models.py --set all-light     # ~110 MB, 4 GB-RAM friendly
 
 | Tier | ASR | TTS | Extra disk | Best for |
 |---|---|---|---|---|
-| **Minimal** | Vosk `small-hi` (42 MB) | Windows OneCore (0 MB) | 42 MB | 4 GB RAM, old CPUs |
-| **Recommended** | IndicConformer int8 (130 MB) | OneCore + optional Piper (64 MB) | ~194 MB | default install |
-| **Accurate** | whisper.cpp `small` Hindi int8 (~490 MB) | Piper | ~550 MB | quiet office, dictation |
-| **With LLM** | any | any | +2.5 GB | free-form Q&A (Phase 6) |
+| **Minimal** (default) | Vosk `small-hi` (42 MB) | Windows OneCore (0 MB) | 42 MB | 4 GB RAM, old CPUs |
+| **Recommended** | IndicConformer int8 (130 MB) | OneCore + optional Piper (64 MB) | ~194 MB | 8 GB, noisy rooms, accents |
+| **With LLM** (Phase 6) | any | any | +2.5 GB | free-form Q&A |
+
+Whisper and whisper.cpp were evaluated and rejected in Phase 2: 75 MB–1.5 GB of weights,
+2–10× the RAM, no streaming, and no Hindi accuracy gain that justifies it on a 4 GB
+machine. The comparison table and the measurements behind it are in
+[docs/VOICE.md](VOICE.md#3-which-recognition-engine-and-why).
 
 ## Hardware gates
 

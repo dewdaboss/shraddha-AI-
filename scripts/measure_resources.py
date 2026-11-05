@@ -189,11 +189,15 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(f"SHRADDHA AI resource report — {report['platform']}")
         print(f"python            {report['python']}")
-        print(f"bare interpreter  {report['interpreter_baseline_ms']:>8.1f} ms   (baseline, subtracted below)")
+        print(
+            f"bare interpreter  {report['interpreter_baseline_ms']:>8.1f} ms   (baseline, subtracted below)"
+        )
         print(f"import core       {report['import_core_ms']:>8.1f} ms   (doctor, config, storage)")
         print(f"import Qt UI      {report['import_ui_ms']:>8.1f} ms")
         print(f"startup to ready  {report['startup_ms']:>8.1f} ms")
-        print(f"resident (median) {report['rss_median_mb']:>8.1f} MB   over {report['samples']} samples")
+        print(
+            f"resident (median) {report['rss_median_mb']:>8.1f} MB   over {report['samples']} samples"
+        )
         print(f"resident (peak)   {report['rss_peak_mb']:>8.1f} MB")
         print(f"exit code          {report['exit_code']}")
         if not report["ready"]:

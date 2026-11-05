@@ -20,13 +20,14 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
-CONFIG_SCHEMA_VERSION = 1
+CONFIG_SCHEMA_VERSION = 2
 
 SAMPLE_RATES = (8_000, 16_000, 22_050, 44_100, 48_000)
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 ASR_ENGINES = ("auto", "sherpa", "vosk", "none")
 TTS_ENGINES = ("auto", "onecore", "piper", "none")
 THEMES = ("system", "dark", "light")
+WAKE_MODES = ("push_to_talk", "phrase", "off")
 
 
 class ConfigError(ValueError):
@@ -57,7 +58,6 @@ class AudioConfig:
     sample_rate: int = 16_000
     channels: int = 1
     frame_ms: int = 20
-    vad_threshold: float = 0.5
     device: str | None = None
 
     def validate(self) -> None:
@@ -66,7 +66,6 @@ class AudioConfig:
         )
         _check_int(self.channels, "audio.channels", 1, 2)
         _check_int(self.frame_ms, "audio.frame_ms", 10, 100)
-        _require(0.0 <= self.vad_threshold <= 1.0, "audio.vad_threshold must be within 0..1")
 
     @property
     def frame_samples(self) -> int:
@@ -76,17 +75,80 @@ class AudioConfig:
 
 @dataclass(slots=True)
 class AsrConfig:
-    """Speech recognition (Hindi by default)."""
+    """Speech recognition and microphone capture (Hindi by default).
+
+    The VAD numbers are the difference between "usable" and "transcribes the fan":
+    ``vad_threshold`` is an RMS gate, ``min_speech_ms`` rejects clicks, and
+    ``silence_ms`` decides how long a pause ends an utterance.
+    """
 
     engine: str = "auto"
     model_dir: str | None = None
     language: str = "hi"
     num_threads: int = 2
+    device: str | None = None
+    sample_rate: int = 16_000
+    vad_threshold: float = 0.02
+    min_speech_ms: int = 250
+    silence_ms: int = 700
+    max_utterance_ms: int = 15_000
+    idle_unload_s: int = 120
 
     def validate(self) -> None:
         _check_choice(self.engine, ASR_ENGINES, "asr.engine")
         _check_int(self.num_threads, "asr.num_threads", 1, 16)
         _require(bool(self.language), "asr.language must not be empty")
+        _require(
+            self.sample_rate in SAMPLE_RATES,
+            f"asr.sample_rate must be one of {SAMPLE_RATES}, got {self.sample_rate}",
+        )
+        _require(0.0 <= self.vad_threshold <= 1.0, "asr.vad_threshold must be within 0..1")
+        _check_int(self.min_speech_ms, "asr.min_speech_ms", 50, 2_000)
+        _check_int(self.silence_ms, "asr.silence_ms", 100, 5_000)
+        _check_int(self.max_utterance_ms, "asr.max_utterance_ms", 1_000, 60_000)
+        _check_int(self.idle_unload_s, "asr.idle_unload_s", 0, 3_600)
+        _require(
+            self.min_speech_ms < self.max_utterance_ms,
+            "asr.min_speech_ms must be smaller than asr.max_utterance_ms",
+        )
+
+
+@dataclass(slots=True)
+class WakeConfig:
+    """Wake word ("Hey Shraddha") behaviour.
+
+    ``push_to_talk`` loads no model until you ask; ``phrase`` keeps the small model
+    warm between utterances and unloads it after ``idle_unload_s``.
+    """
+
+    mode: str = "push_to_talk"
+    phrases: tuple[str, ...] = ("hey shraddha", "श्रद्धा", "shraddha", "o shraddha")
+    fuzzy_distance: int = 2
+    idle_unload_s: int = 60
+
+    def validate(self) -> None:
+        _check_choice(self.mode, WAKE_MODES, "wake.mode")
+        _check_int(self.fuzzy_distance, "wake.fuzzy_distance", 0, 4)
+        _check_int(self.idle_unload_s, "wake.idle_unload_s", 0, 3_600)
+        phrases = tuple(str(p).strip() for p in self.phrases if str(p).strip())
+        _require(bool(phrases), "wake.phrases must contain at least one phrase")
+        self.phrases = phrases
+
+
+@dataclass(slots=True)
+class CommandsConfig:
+    """Voice command routing and safety rails."""
+
+    enabled: bool = True
+    allow_power_actions: bool = False
+    confirm_sensitive: bool = True
+    announce_actions: bool = True
+
+    def validate(self) -> None:
+        for flag in ("enabled", "allow_power_actions", "confirm_sensitive", "announce_actions"):
+            _require(
+                isinstance(getattr(self, flag), bool), f"commands.{flag} must be true or false"
+            )
 
 
 @dataclass(slots=True)
@@ -98,11 +160,13 @@ class TtsConfig:
     rate: int = 0
     volume: int = 100
     piper_model: str | None = None
+    speak_replies: bool = True
 
     def validate(self) -> None:
         _check_choice(self.engine, TTS_ENGINES, "tts.engine")
         _check_int(self.rate, "tts.rate", -10, 10)
         _check_int(self.volume, "tts.volume", 0, 100)
+        _require(isinstance(self.speak_replies, bool), "tts.speak_replies must be true or false")
 
 
 @dataclass(slots=True)
@@ -141,6 +205,8 @@ class LlmConfig:
 _SECTIONS: dict[str, type] = {
     "audio": AudioConfig,
     "asr": AsrConfig,
+    "wake": WakeConfig,
+    "commands": CommandsConfig,
     "tts": TtsConfig,
     "ui": UiConfig,
     "llm": LlmConfig,
@@ -155,6 +221,8 @@ class AppConfig:
     log_level: str = "INFO"
     audio: AudioConfig = field(default_factory=AudioConfig)
     asr: AsrConfig = field(default_factory=AsrConfig)
+    wake: WakeConfig = field(default_factory=WakeConfig)
+    commands: CommandsConfig = field(default_factory=CommandsConfig)
     tts: TtsConfig = field(default_factory=TtsConfig)
     ui: UiConfig = field(default_factory=UiConfig)
     llm: LlmConfig = field(default_factory=LlmConfig)

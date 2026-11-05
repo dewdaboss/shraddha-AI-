@@ -11,7 +11,13 @@ from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QVariantAnimation
 from PySide6.QtGui import QColor, QPainter, QPaintEvent, QPen
 from PySide6.QtWidgets import QAbstractButton, QPushButton, QSizePolicy, QWidget
 
-from shraddha.ui.icons import close_pixmap, mic_pixmap, send_pixmap, stop_pixmap
+from shraddha.ui.icons import (
+    close_pixmap,
+    mic_off_pixmap,
+    mic_pixmap,
+    send_pixmap,
+    stop_pixmap,
+)
 from shraddha.ui.theme import ANIM_PULSE_MS, PALETTE
 
 
@@ -69,7 +75,7 @@ class MicButton(QAbstractButton):
         self.setCheckable(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedSize(QSize(42, 42))
-        self.setToolTip("हिन्दी आवाज़ से बोलिए (Phase 2)")
+        self.setToolTip("आवाज़ से बोलिए - दबाकर सुनना शुरू या बंद कीजिए")
         self._pulse = 0.0
         self._hovered = False
         self._icon = mic_pixmap(22, PALETTE.text_dim)
@@ -169,10 +175,18 @@ class IconButton(QPushButton):
         if tooltip:
             self.setToolTip(tooltip)
 
+    def set_kind(self, kind: str) -> None:
+        """Swap the drawn glyph without rebuilding the widget."""
+        if kind != self._kind:
+            self._kind = kind
+            self._refresh()
+
     def _refresh(self) -> None:
         painter_map = {
             "close": close_pixmap(16, PALETTE.text_dim),
             "send": send_pixmap(20, PALETTE.background),
+            "mic": mic_pixmap(20, PALETTE.neon),
+            "mic_off": mic_off_pixmap(20, PALETTE.text_dim),
         }
         pixmap = painter_map.get(self._kind)
         if pixmap is not None:

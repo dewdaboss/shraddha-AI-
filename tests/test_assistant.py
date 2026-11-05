@@ -60,7 +60,8 @@ def test_help_lists_what_works(assistant: Assistant) -> None:
     reply = assistant.respond("मदद")
     assert reply.intent == "help"
     assert reply.text == HELP_TEXT
-    assert "Phase 2" in reply.text
+    assert "Chrome खोलो" in reply.text, "help must list the commands that work today"
+    assert "माइक" in reply.text, "help must say that voice input works"
 
 
 @pytest.mark.parametrize("text", ["तुम कौन हो?", "who are you", "tum kaun ho"])

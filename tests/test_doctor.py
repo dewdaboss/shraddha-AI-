@@ -40,8 +40,18 @@ def test_doctor_text_report_is_readable(app_home: Path) -> None:
 
 def test_doctor_warns_when_components_are_missing(app_home: Path) -> None:
     warnings = " ".join(run_doctor().warnings)
-    assert "microphone support not installed" in warnings
-    assert "no ASR engine installed" in warnings
+    assert "microphone" in warnings
+    assert "speech model" in warnings
+
+
+def test_doctor_reports_the_voice_stack(app_home: Path) -> None:
+    report = run_doctor()
+    assert set(report.asr_engines) == {"vosk", "sherpa"}
+    for info in report.asr_engines.values():
+        assert info["ready"] is False, "no model is installed in the test environment"
+        assert info["message"]
+    assert report.wake_mode == "push_to_talk"
+    assert "available" in report.microphone
 
 
 def test_doctor_advises_llm_ram(app_home: Path) -> None:

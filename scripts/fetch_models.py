@@ -28,6 +28,7 @@ import hashlib
 import sys
 import urllib.error
 import urllib.request
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -38,6 +39,7 @@ from shraddha.paths import get_paths  # noqa: E402  (after sys.path setup)
 
 MODELS_HOST = "https://huggingface.co"
 USER_AGENT = "shraddha-ai-model-fetcher/0.1"
+
 
 #: size_mb is indicative (for the CLI summary), sha256 is optional: fill it in after a
 #: verified download with ``--record-hash`` and the value becomes mandatory.
@@ -149,9 +151,37 @@ def download(asset: Asset, destination: Path, force: bool = False) -> Path:
     return target
 
 
+def extract_archive(archive: Path, destination: Path) -> Path | None:
+    """Unpack a ``.zip`` model next to the archive; returns the model directory.
+
+    Vosk ships a zip, everything else ships loose files. Members are validated first so a
+    tampered archive cannot write outside the models folder.
+    """
+    if archive.suffix.lower() != ".zip":
+        return None
+
+    with zipfile.ZipFile(archive) as bundle:
+        for member in bundle.namelist():
+            resolved = (destination / member).resolve()
+            if not resolved.is_relative_to(destination.resolve()):
+                raise RuntimeError(f"refusing to extract {member!r} outside {destination}")
+        bundle.extractall(destination)
+        roots = {member.split("/")[0] for member in bundle.namelist() if member.strip()}
+
+    print(f"  unzip  {archive.name} -> {', '.join(sorted(roots))}")
+    archive.unlink(missing_ok=True)
+    if len(roots) == 1:
+        single = destination / roots.pop()
+        if single.is_dir():
+            return single
+    return destination
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Fetch local speech models for SHRADDHA AI.")
-    parser.add_argument("--set", dest="sets", action="append", default=[], help="model set to fetch")
+    parser.add_argument(
+        "--set", dest="sets", action="append", default=[], help="model set to fetch"
+    )
     parser.add_argument("--list", action="store_true", help="list available sets and exit")
     parser.add_argument("--dry-run", action="store_true", help="show what would be downloaded")
     parser.add_argument("--force", action="store_true", help="re-download even if present")
@@ -181,8 +211,9 @@ def main(argv: list[str] | None = None) -> int:
     failures = 0
     for asset in assets:
         try:
-            download(asset, destination, force=args.force)
-        except (RuntimeError, OSError) as exc:
+            target = download(asset, destination, force=args.force)
+            extract_archive(target, destination)
+        except (RuntimeError, OSError, zipfile.BadZipFile) as exc:
             print(f"  FAIL   {exc}", file=sys.stderr)
             failures += 1
     return 0 if failures == 0 else 1

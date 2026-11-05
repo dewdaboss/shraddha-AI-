@@ -1,28 +1,37 @@
-"""Speech recognition seam for Phase 2.
+"""Compatibility seam for callers that only need a recogniser object.
 
-Nothing here recognises speech yet. What it *does* provide is the interface the UI
-already talks to, so Phase 2 can drop in sherpa-onnx / Vosk without touching the
-overlay, the tray or the assistant wiring.
+Phase 2 delivered real recognition in :mod:`shraddha.speech.engines`; this module keeps
+the small Phase 1 interface (`start()` / `stop()` → one transcript) working on top of it,
+so nothing that used the old seam has to change.
 
-Design rules for the Phase 2 implementation:
+New code should prefer :class:`shraddha.speech.service.VoiceService`, which streams, runs
+the VAD and owns the idle-unload policy.
 
-* never import the ASR engine at module import time (it costs ~150 MB);
-* load the model on first ``start()``, release it on ``stop()``;
-* run recognition in a child process so the memory can actually be reclaimed.
+Rules preserved from Phase 1:
+
+* no ASR import at module import time (a model costs 100+ MB, an engine wheel costs more);
+* an engine that cannot run never pretends to: it reports why, in Hindi.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from shraddha.logging_setup import get_logger
+from shraddha.speech.engines import create_recognizer as create_engine
 
 log = get_logger("asr")
+
+NO_ENGINE_MESSAGE = (
+    "हिन्दी आवाज़ से सुनना अभी तैयार नहीं है। मॉडल डाउनलोड कीजिए: "
+    "python scripts/fetch_models.py --set asr-light"
+)
 
 
 @runtime_checkable
 class SpeechRecognizer(Protocol):
-    """Streaming microphone → Hindi text."""
+    """Microphone → Hindi text, one utterance at a time."""
 
     name: str
 
@@ -45,14 +54,10 @@ class SpeechRecognizer(Protocol):
 
 
 class UnavailableRecognizer:
-    """Placeholder used until Phase 2 lands.
-
-    It is intentionally an honest no-op: the microphone button keeps working as a UI
-    control, but the assistant never pretends to have heard something.
-    """
+    """Returned when no engine can run; an honest no-op rather than a fake."""
 
     name = "none"
-    _REASON = "हिन्दी आवाज़ से सुनना अभी उपलब्ध नहीं है (Phase 2)। अभी कृपया टाइप करके लिखिए।"
+    _REASON = NO_ENGINE_MESSAGE
 
     @property
     def is_available(self) -> bool:
@@ -73,6 +78,51 @@ class UnavailableRecognizer:
         return None
 
 
-def create_recognizer() -> SpeechRecognizer:
-    """Factory used by the UI. Phase 2 returns a real engine here."""
-    return UnavailableRecognizer()
+class EngineRecognizer:
+    """Adapts an :class:`~shraddha.speech.engines.base.OfflineRecognizer` to this seam.
+
+    Audio capture is not part of this adapter; the caller feeds PCM into
+    :meth:`feed` and receives a transcript once the utterance is complete.
+    """
+
+    def __init__(self, engine, models_dir: Path | None = None) -> None:
+        self._engine = engine
+        self._models_dir = models_dir
+        self.name = engine.name
+
+    @property
+    def is_available(self) -> bool:
+        return True
+
+    @property
+    def unavailable_reason(self) -> str:
+        return ""
+
+    def start(self) -> bool:
+        self._engine.load()
+        return True
+
+    def stop(self) -> str:
+        return ""
+
+    def transcribe(self, pcm: bytes, sample_rate: int = 16_000) -> str:
+        return self._engine.transcribe(pcm, sample_rate).text
+
+    def close(self) -> None:
+        self._engine.close()
+
+
+def create_recognizer(matcher=None, models_dir: Path | None = None) -> SpeechRecognizer:
+    """Build the best available engine, or an unavailable placeholder.
+
+    ``matcher`` is accepted for backwards compatibility with the Phase 1 signature and is
+    no longer used: matching moved to :mod:`shraddha.speech.wake`.
+    """
+    engine = create_engine(engine="auto", model_dir=models_dir)
+    if engine is None:
+        return UnavailableRecognizer()
+    available, reason = engine.availability()
+    if not available:
+        log.debug("engine %s unavailable: %s", engine.name, reason)
+        return UnavailableRecognizer()
+    return EngineRecognizer(engine, models_dir)

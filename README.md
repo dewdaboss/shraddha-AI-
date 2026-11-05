@@ -4,10 +4,16 @@ A lightweight, **local-first**, **Hindi-first** voice assistant for Windows 10.
 
 No cloud. No API keys. No subscription. No telemetry. It works with the network cable unplugged.
 
-> **Status: Phase 1 — desktop interface.** A tray icon, a floating overlay, a global
-> hotkey, single-instance handling and a working Hindi text chat. Speech recognition
-> (Phase 2), speech output (Phase 3) and the optional local AI (Phase 6) are not built yet,
-> and the interface says so instead of pretending. See [docs/ROADMAP.md](docs/ROADMAP.md).
+> **Status: Phase 2 — Hindi voice.** Press the microphone (or say "श्रद्धा, …") and speak
+> Hindi or Hinglish; the words are recognised **on your machine**, routed through an
+> allowlist, executed, and answered out loud in Hindi. Recognition runs only while you
+> are actually speaking — no model is kept loaded while the app sits idle.
+>
+> **What has not been verified here:** the real microphone/PortAudio path, the Windows
+> voices, and recognition accuracy on live speech. The development sandbox has no audio
+> hardware; all such behaviour is marked *hardware-dependent* in
+> [docs/VOICE.md](docs/VOICE.md#12-verification-what-is-tested-and-what-is-not). Open-ended
+> questions still need the optional local LLM (Phase 6). See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ---
 
@@ -35,10 +41,14 @@ Design priorities, in order:
 | Single instance + "wake the running window" IPC | ✅ Phase 1 |
 | Text command input and Hindi chat transcript | ✅ Phase 1 |
 | Conversation history in SQLite, restored on restart | ✅ Phase 1 |
-| Microphone button (UI + state machine) | ✅ Phase 1 (wired to a placeholder) |
-| Hindi speech recognition | ⏳ Phase 2 |
-| Hindi speech output | ⏳ Phase 3 |
-| Intent grammar and system skills | ⏳ Phase 4 |
+| Microphone button, mute/unmute, live listening status | ✅ Phase 2 (logic tested; needs a real mic) |
+| Offline Hindi/Hinglish speech recognition (Vosk 42 MB, sherpa-onnx optional) | ✅ Phase 2 (engine logic tested; accuracy needs your machine) |
+| Wake word "श्रद्धा" / "Hey Shraddha", push-to-talk, or off | ✅ Phase 2 (matcher tested) |
+| Hindi command layer: open apps/folders/sites, date, time, stop listening, change voice | ✅ Phase 2 (40+ sentence corpus tested) |
+| Safety: allowlists, no shell, spoken confirmation, power actions refused | ✅ Phase 2 |
+| Hindi spoken replies (Windows OneCore + optional Piper) | ✅ Phase 2 (Windows synthesis is hardware-dependent) |
+| Idle model unloading, no always-on heavy model | ✅ Phase 2 |
+| System skills beyond the allowlist (volume, files, windows) | ⏳ Phase 4 |
 | Optional local LLM | ⏳ Phase 6 |
 
 ## Quick start
@@ -70,11 +80,24 @@ extras loaded lazily, so an unused feature costs no memory.
 
 ```bash
 pip install -e ".[ui]"          # PySide6 desktop interface
-pip install -e ".[audio]"       # microphone capture (Phase 2)
-pip install -e ".[asr]"         # sherpa-onnx speech recognition (Phase 2)
-pip install -e ".[tts-piper]"   # neural Hindi TTS (Phase 3)
-pip install -e ".[win]"         # Windows SAPI/OneCore voices (Phase 3)
+pip install -e ".[audio]"       # microphone capture (PortAudio)
+pip install -e ".[asr-vosk]"    # Vosk: 42 MB Hindi model, best for 4 GB machines
+pip install -e ".[asr]"         # sherpa-onnx + IndicConformer: better accuracy, more RAM
+pip install -e ".[tts-piper]"   # neural Hindi voice (non-commercial licence)
+pip install -e ".[win]"         # Windows SAPI/OneCore voices
 ```
+
+### Voice quick start
+
+```bash
+pip install -e ".[ui,audio,asr-vosk,win]"
+python scripts/fetch_models.py --set asr-light   # 42 MB, Apache-2.0, unzipped automatically
+python -m shraddha --doctor                      # microphone + engine + voice report
+python -m shraddha --ui
+```
+
+Then press **Ctrl+Alt+S**, click the microphone, and say *"श्रद्धा, Chrome खोलो।"*
+Full details, tuning and troubleshooting: [docs/VOICE.md](docs/VOICE.md).
 
 ## Measured performance
 
@@ -83,24 +106,27 @@ From `python scripts/measure_resources.py` on the development sandbox
 
 | Metric | Value | Budget |
 |---|---|---|
-| import core (`doctor`, `config`, `storage`) | 43 ms | — |
-| import Qt UI | 43 ms | — |
-| spawn → UI ready | **176 ms** | ≤ 2 s ✅ |
-| resident memory, idle | **61.8 MB** | ≤ 90 MB ✅ |
+| import core (`doctor`, `config`, `storage`) | 48 ms | — |
+| import Qt UI | 56 ms | — |
+| spawn → UI ready | **184 ms** | ≤ 2 s ✅ |
+| resident memory, idle (voice layer included) | **64.0 MB** | ≤ 90 MB ✅ |
 | background processes | **0** | 0 ✅ |
 | heavy AI libraries imported at startup | **none** | none ✅ |
 
-A CI job fails the build if `onnxruntime`, `numpy`, `torch`, `sherpa_onnx` or Qt is ever
-imported on the CLI path.
+A CI job fails the build if `onnxruntime`, `numpy`, `torch`, `sherpa_onnx`, `vosk` or Qt
+is ever imported on the CLI path — which is why startup stays instant and idle RAM stays
+at two figures. With the small Hindi model **loaded** the expected footprint is
+180–300 MB, and the model is dropped again after 120 s of silence.
 
-## Hindi voice stack (planned, all free and local)
+## Hindi voice stack (all free, all local)
 
-| Layer | Engine | Notes |
-|---|---|---|
-| Recognition | **sherpa-onnx** + Hindi IndicConformer (int8) | offline, streaming, ~130 MB |
-| Recognition (light) | **Vosk** `small-hi` | ~42 MB, fallback for weak CPUs |
-| Speech, tier 1 | **Windows built-in** — Hemant (m) / Kalpana (f) | zero download, zero RAM |
-| Speech, tier 2 | **Piper** `hi_IN` neural voices | ~63 MB, more natural — see licence caveat |
+| Layer | Engine | Licence | Notes |
+|---|---|---|---|
+| Recognition (default) | **Vosk** `vosk-model-small-hi-0.22` | Apache-2.0 ✅ | 42 MB, ~100–200 MB RSS, no ONNX Runtime |
+| Recognition (optional) | **sherpa-onnx** + Hindi IndicConformer int8 | CC-BY-4.0 ✅ | ~130 MB model, better on accents/noise, +60–90 MB runtime |
+| Speech, tier 1 | **Windows built-in** — Hemant (m) / Kalpana (f) | with Windows ✅ | zero download, zero extra RAM |
+| Speech, tier 2 | **Piper** `hi_IN` neural voices | CC-BY-NC-SA ❌ | ~63 MB, most natural, **non-commercial only** |
+| Wake word | VAD + short-burst ASR + fuzzy matcher | — | no dedicated wake model, nothing always-on |
 
 ⚠️ **Licence caveat:** the Piper Hindi voices (`pratham`, `priyamvada`, `rohan`) were
 trained on non-commercial / research-only audio. They are fine for personal use but
@@ -116,7 +142,7 @@ python -m shraddha --init            # create config, database and folders
 python -m shraddha --ui              # start the desktop assistant
 python scripts/fetch_models.py --list
 python scripts/measure_resources.py  # startup time and resident memory
-pytest                               # 197 tests
+pytest                               # 466 tests
 ```
 
 ## Repository layout
@@ -130,20 +156,33 @@ src/shraddha/
   instance.py        single-instance lock with stale-PID recovery
   hotkey.py          hotkey parsing -> Win32 modifier/virtual-key codes
   assistant.py       deterministic Hindi replies (the Phase 4/6 seam)
-  speech/            TTS engine detection, ASR protocol placeholder
+  speech/vad.py      pure-Python energy VAD + utterance segmenter (no numpy)
+  speech/audio.py    PortAudio capture, device listing, clear mic errors
+  speech/engines/    Vosk and sherpa-onnx recognisers + engine selection policy
+  speech/wake.py     wake-phrase matching (Latin + Devanagari, bounded edit distance)
+  speech/service.py  the pipeline: capture -> VAD -> ASR -> wake gate -> events
+  speech/tts.py      engine detection *and* synthesis (OneCore, Piper, null)
+  commands/apps.py   the allowlists: apps, URLs, Windows known folders
+  commands/router.py Hindi/Hinglish sentences -> intents (pure, no I/O)
+  commands/actions.py the only module that launches a process or opens a folder
+  commands/confirmation.py spoken yes/no gate for sensitive actions
   storage/db.py      SQLite schema + migrations
-  ui/                theme, overlay, chat, tray, hotkey, ipc, app wiring
-docs/                architecture, UI design notes, roadmap, model provisioning
+  ui/                theme, overlay, chat, tray, hotkey, ipc, voice bridge, app wiring
+docs/                architecture, voice pipeline, UI notes, roadmap, model provisioning
 scripts/             model downloader, resource measurement
 tests/               pytest suite (runs headless on Linux, including the Qt tests)
 ```
 
 ## Testing notes
 
-The Qt tests run headless via the `minimal` platform plugin, so widget construction,
-layout, signals, chat behaviour and painting are all covered on Linux and in CI. Three
-things need a real Windows 10 machine and are listed in [docs/UI.md](docs/UI.md#what-could-not-be-verified-on-linux):
-global hotkey delivery, the tray icon, and Devanagari font shaping.
+466 tests, no network, no API keys, no audio hardware: the voice pipeline is driven with
+synthetic frames and fake recognisers, and the Qt tests run headless via the `minimal`
+platform plugin. Nothing is launched and nothing is downloaded during a test run.
+
+What still needs a real Windows 10 machine: microphone capture, recognition accuracy on
+live speech, Windows voice synthesis, global hotkey delivery, the tray icon, and
+Devanagari font shaping. See [docs/VOICE.md](docs/VOICE.md#12-verification-what-is-tested-and-what-is-not)
+and [docs/UI.md](docs/UI.md#what-could-not-be-verified-on-linux).
 
 ## Contributing
 

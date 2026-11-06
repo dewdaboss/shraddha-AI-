@@ -90,3 +90,20 @@ def test_off_windows_reports_platform_warning(app_home: Path) -> None:
     report = run_doctor()
     if sys.platform != "win32":
         assert any("not running on Windows" in warning for warning in report.warnings)
+
+
+def test_doctor_reports_the_phase_4_skills(app_home: Path) -> None:
+    import sys
+
+    report = run_doctor()
+
+    assert set(report.skills) == {"timer", "notes", "file search", "clipboard", "volume", "windows"}
+    assert report.skills["timer"] == "ok"
+    assert report.skills["notes"] == "ok"
+    assert "skills" in report.as_dict()
+    assert "command skills (phase 4)" in report.to_text()
+    if sys.platform == "win32":  # pragma: no cover - only on Windows
+        assert report.skills["volume"] == "ok"
+    else:
+        assert report.skills["volume"] == "Windows only"
+        assert report.skills["windows"] == "Windows only"

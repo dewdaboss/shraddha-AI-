@@ -280,7 +280,7 @@ def test_ordinary_chat_still_answers(parts) -> None:
     controller.on_submitted("भारत की राजधानी क्या है?")
 
     assert controller.overlay.chat.last_message()[0] == "assistant"
-    assert "Phase" in controller.overlay.chat.last_message()[1]
+    assert "क्लाउड AI" in controller.overlay.chat.last_message()[1]
 
 
 def test_conversation_is_persisted_for_both_sources(parts) -> None:

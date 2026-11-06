@@ -1,14 +1,13 @@
-"""The assistant's reply engine - deliberately tiny in Phase 1.
+"""The assistant's local reply engine.
 
-This is **not** the AI. It is a deterministic, offline responder that makes the
-interface usable and testable before the speech and language layers exist:
+This is **not** the AI and it never acts: commands (open, timer, notes, clipboard,
+volume, windows, search) are parsed by :mod:`shraddha.commands.router` and executed by
+:mod:`shraddha.commands.actions`. What lives here is the deterministic, offline layer
+that answers the small talk and explains what the assistant can do:
 
 * time / date / help / identity / greeting / thanks - real answers, built locally;
-* everything else - an honest "I am not connected to a language model yet".
-
-Phase 4 replaces the keyword matcher with a proper Hindi/Hinglish grammar, and Phase 6
-adds the optional local LLM. Both slot in behind :meth:`Assistant.respond`, so the UI
-never has to change.
+* everything else - an honest "I could not answer that locally", with a pointer to the
+  optional cloud answer (:mod:`shraddha.ai`) when the user has enabled it.
 
 No network. No paid API. No model. This module must stay importable in microseconds.
 """
@@ -55,30 +54,35 @@ _MONTHS = (
 )
 
 FALLBACK_TEXT = (
-    "माफ़ कीजिए, अभी मैं भाषा-मॉडल से नहीं जुड़ी हूँ, इसलिए इस सवाल का जवाब नहीं दे सकती। "
-    "स्थानीय AI Phase 6 में जुड़ेगा (पूरी तरह ऑफ़लाइन, कोई शुल्क नहीं)। "
+    "माफ़ कीजिए, इस सवाल का जवाब मेरे पास स्थानीय रूप से नहीं है। "
+    "अगर आप क्लाउड AI चालू करें (\"क्लाउड AI चालू करो\") तो यह सवाल Google Gemini से "
+    "पूछा जा सकता है; वरना सब कुछ आपके कंप्यूटर पर ही रहता है। "
     "'मदद' लिखिए तो मैं बता दूँगी कि अभी क्या-क्या कर सकती हूँ।\n\n"
-    "(I am not connected to a language model yet, so I cannot answer that. "
+    "(I could not answer that locally. Cloud AI is optional and off by default. "
     "Type 'help' to see what works today.)"
 )
 
 HELP_TEXT = (
     "अभी मैं ये काम कर सकती हूँ:\n"
-    '• समय बताना - "समय क्या है?"\n'
-    '• तारीख़ बताना - "आज कौन सी तारीख़ है?"\n'
+    '• समय / तारीख़ - "समय क्या है?"\n'
     '• ऐप खोलना - "Chrome खोलो", "notepad kholo"\n'
-    '• फोल्डर खोलना - "मेरी डाउनलोड फाइल खोलो", "documents kholo"\n'
-    '• अपने बारे में बताना - "तुम कौन हो?"\n\n'
+    '• फोल्डर खोलना - "मेरी डाउनलोड फाइल खोलो"\n'
+    '• टाइमर - "5 मिनट का टाइमर लगाओ", "टाइमर बंद करो"\n'
+    '• नोट्स - "नोट लिखो दूध लाना है", "मेरा नोट पढ़ो"\n'
+    '• क्लिपबोर्ड - "कॉपी करो बैठक 5 बजे", "क्लिपबोर्ड में क्या है"\n'
+    '• आवाज़ - "volume बढ़ाओ", "आवाज़ कम करो"\n'
+    '• विंडो - "window छोटा करो", "window बंद करो" (पूछकर)\n'
+    '• फाइल खोजना - "documents में बजट ढूँढो"\n'
+    '• क्लाउड AI (वैकल्पिक, अभी बंद) - "क्लाउड AI चालू करो"\n\n'
     "आवाज़ से भी बोल सकती हूँ: माइक दबाइए, या 'श्रद्धा' कहकर बुलाइए। "
-    'सुनना बंद करने के लिए कहिए - "मेरी बात सुनना बंद करो"।\n\n'
-    "अगले चरण: आवाज़ की बारीकियाँ (Phase 3), और ज़्यादा आदेश (Phase 4), "
-    "और स्थानीय AI (Phase 6)।"
+    'सुनना बंद करने के लिए कहिए - "मेरी बात सुनना बंद करो"।'
 )
 
 IDENTITY_TEXT = (
-    "मैं श्रद्धा हूँ - एक स्थानीय, ऑफ़लाइन हिन्दी सहायक। "
-    "मेरा सारा काम आपके कंप्यूटर पर ही होता है: कोई क्लाउड नहीं, कोई API कुंजी नहीं, "
-    "और आपकी आवाज़ कभी बाहर नहीं जाती।"
+    "मैं श्रद्धा हूँ - एक हिन्दी-प्रथम, स्थानीय सहायक। "
+    "मेरा काम आपके कंप्यूटर पर ही होता है और आपकी आवाज़ कभी बाहर नहीं जाती। "
+    "क्लाउड AI (Google Gemini) वैकल्पिक है और तब तक बंद रहता है जब तक आप खुद "
+    "\"क्लाउड AI चालू करो\" न कहें।"
 )
 
 

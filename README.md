@@ -5,7 +5,7 @@ A lightweight, **local-first**, **Hindi-first** voice assistant for Windows 10.
 No cloud by default. No API keys required. No subscription. No telemetry. It works with
 the network cable unplugged.
 
-> **Status: Phase 3 — optional cloud answers.** Press the microphone (or say "श्रद्धा, …")
+> **Status: Phase 4 — everyday skills.** Press the microphone (or say "श्रद्धा, …")
 > and speak Hindi or Hinglish; the words are recognised **on your machine**, routed through
 > an allowlist, executed, and answered out loud in Hindi. Questions the rule engine cannot
 > answer can now be sent to **Google Gemini — but only after you add a key *and* grant
@@ -58,7 +58,12 @@ Design priorities, in order:
 | Keys from env vars or the Windows Credential Manager, never in `config.json` | ✅ Phase 3 (logic tested with a fake store) |
 | Offline / rate-limit / invalid-key / retired-model handling, in Hindi | ✅ Phase 3 |
 | The model can never open apps or run commands (test-enforced) | ✅ Phase 3 |
-| System skills beyond the allowlist (volume, files, windows) | ⏳ Phase 4 |
+| Timer ("5 मिनट का टाइमर"), announced in chat + speech + tray | ✅ Phase 4 |
+| Notes ("नोट लिखो …", "मेरा नोट पढ़ो"), stored in SQLite | ✅ Phase 4 |
+| Clipboard copy and read | ✅ Phase 4 (Windows path untested here) |
+| Volume up/down/mute (relative steps) | ✅ Phase 4 (Windows path untested here) |
+| Minimise / close the foreground window, close always confirmed | ✅ Phase 4 (Windows path untested here) |
+| File search in Documents/Desktop/Downloads ("ढूँढो") | ✅ Phase 4 |
 | Optional local LLM (llama.cpp, no network at all) | ⏳ Phase 6 |
 
 ## Quick start
@@ -109,6 +114,19 @@ python -m shraddha --ui
 Then press **Ctrl+Alt+S**, click the microphone, and say *"श्रद्धा, Chrome खोलो।"*
 Full details, tuning and troubleshooting: [docs/VOICE.md](docs/VOICE.md).
 
+### Everyday skills (Phase 4)
+
+```text
+5 मिनट का टाइमर लगाओ          नोट लिखो दूध लाना है
+टाइमर कितना बाकी है            मेरा नोट पढ़ो
+कॉपी करो बैठक 5 बजे            क्लिपबोर्ड में क्या है
+volume बढ़ाओ / कम करो          window छोटा करो
+documents में budget ढूँढो     window बंद करो   (पूछकर)
+```
+
+All local, no model and no key needed. Full list, limits and safety rules:
+[docs/SKILLS.md](docs/SKILLS.md).
+
 ### Optional: cloud answers (off by default)
 
 ```bash
@@ -132,8 +150,8 @@ From `python scripts/measure_resources.py` on the development sandbox
 |---|---|---|
 | import core (`doctor`, `config`, `storage`) | 48 ms | — |
 | import Qt UI | 56 ms | — |
-| spawn → UI ready | **200 ms** | ≤ 2 s ✅ |
-| resident memory, idle (voice + AI layers, no SDK loaded) | **64.4 MB** | ≤ 90 MB ✅ |
+| spawn → UI ready | **228 ms** | ≤ 2 s ✅ |
+| resident memory, idle (voice + AI + skills, no SDK loaded) | **64.5 MB** | ≤ 90 MB ✅ |
 | background processes | **0** | 0 ✅ |
 | heavy AI libraries imported at startup | **none** (`google-genai` is imported lazily, on the worker, after consent) | none ✅ |
 
@@ -170,7 +188,7 @@ python -m shraddha --set-api-key     # store a Gemini key in the Credential Mana
 python -m shraddha --ai-check        # one real round-trip; prints the answer
 python scripts/fetch_models.py --list
 python scripts/measure_resources.py  # startup time and resident memory
-pytest                               # 615 tests
+pytest                               # 721 tests
 ```
 
 ## Repository layout
@@ -183,7 +201,7 @@ src/shraddha/
   doctor.py          environment & capability diagnostics
   instance.py        single-instance lock with stale-PID recovery
   hotkey.py          hotkey parsing -> Win32 modifier/virtual-key codes
-  assistant.py       deterministic Hindi replies (the Phase 4/6 seam)
+  assistant.py       deterministic Hindi replies: help, identity, date/time, fallback
   speech/vad.py      pure-Python energy VAD + utterance segmenter (no numpy)
   speech/audio.py    PortAudio capture, device listing, clear mic errors
   speech/engines/    Vosk and sherpa-onnx recognisers + engine selection policy
@@ -198,9 +216,10 @@ src/shraddha/
   ai/service.py      the three-way gate + history + retry + Hindi error translation
   ai/gemini.py       google-genai provider (lazy import, one-level model fallback)
   ai/keys.py         env vars -> Windows Credential Manager, masked everywhere
+  commands/timer.py  one daemon AlarmTimer + Hindi duration words (Phase 4)
   storage/db.py      SQLite schema + migrations
   ui/                theme, overlay, chat, tray, hotkey, ipc, voice bridge, AI bridge,
-                     app wiring
+                     timer bridge, app wiring
 docs/                architecture, voice pipeline, UI notes, roadmap, model provisioning
 scripts/             model downloader, resource measurement
 tests/               pytest suite (runs headless on Linux, including the Qt tests)
@@ -208,14 +227,16 @@ tests/               pytest suite (runs headless on Linux, including the Qt test
 
 ## Testing notes
 
-615 tests, no network, no API keys, no audio hardware: the voice pipeline is driven with
+721 tests, no network, no API keys, no audio hardware: the voice pipeline is driven with
 synthetic frames and fake recognisers, the Gemini SDK is replaced by a fake client, and the
 Qt tests run headless via the `minimal` platform plugin. Nothing is launched, nothing is
 downloaded and nothing is sent anywhere during a test run.
 
 What still needs a real Windows 10 machine: microphone capture, recognition accuracy on
 live speech, Windows voice synthesis, global hotkey delivery, the tray icon, Devanagari
-font shaping, Credential Manager key storage, and a live Gemini round-trip. See [docs/VOICE.md](docs/VOICE.md#12-verification-what-is-tested-and-what-is-not)
+font shaping, Credential Manager key storage, a live Gemini round-trip, and the Windows
+clipboard / volume / window APIs behind the Phase 4 skills (see
+[docs/SKILLS.md](docs/SKILLS.md#6-verification)). See [docs/VOICE.md](docs/VOICE.md#12-verification-what-is-tested-and-what-is-not)
 and [docs/UI.md](docs/UI.md#what-could-not-be-verified-on-linux).
 
 ## Contributing

@@ -62,14 +62,19 @@ def test_help_lists_what_works(assistant: Assistant) -> None:
     assert reply.text == HELP_TEXT
     assert "Chrome खोलो" in reply.text, "help must list the commands that work today"
     assert "माइक" in reply.text, "help must say that voice input works"
+    assert "टाइमर" in reply.text and "नोट" in reply.text, "Phase 4 skills must be listed"
+    assert "क्लाउड AI" in reply.text, "the optional cloud answer must be discoverable"
 
 
 @pytest.mark.parametrize("text", ["तुम कौन हो?", "who are you", "tum kaun ho"])
 def test_identity_explains_local_only(assistant: Assistant, text: str) -> None:
     reply = assistant.respond(text)
     assert reply.intent == "identity"
-    assert "ऑफ़लाइन" in reply.text
-    assert "API" in reply.text
+    assert "स्थानीय" in reply.text
+    assert "आवाज़ कभी बाहर नहीं जाती" in reply.text
+    # The identity must not promise "no cloud at all" any more: it is opt-in, not absent.
+    assert "क्लाउड AI" in reply.text
+    assert "बंद रहता है" in reply.text
 
 
 def test_thanks(assistant: Assistant) -> None:
@@ -81,7 +86,8 @@ def test_unknown_question_is_an_honest_fallback(assistant: Assistant) -> None:
     assert reply.intent == "fallback"
     assert reply.is_fallback
     assert reply.text == FALLBACK_TEXT
-    assert "Phase 6" in reply.text, "the fallback must say what is actually missing"
+    assert "क्लाउड AI" in reply.text, "the fallback must point at the optional cloud answer"
+    assert "स्थानीय" in reply.text
 
 
 @pytest.mark.parametrize("text", ["", "   ", "\n"])

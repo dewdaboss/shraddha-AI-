@@ -25,6 +25,7 @@ from shraddha.commands import (
     ConfirmationGate,
     ConfirmationOutcome,
 )
+from shraddha.commands.actions import windows_skills
 from shraddha.config import AppConfig, ConfigError
 from shraddha.instance import SingleInstanceLock
 from shraddha.logging_setup import get_logger, setup_logging
@@ -80,6 +81,7 @@ class AssistantController:
         from shraddha.ui.hotkey import GlobalHotkey
         from shraddha.ui.ipc import ActivationServer
         from shraddha.ui.overlay import AssistantOverlay
+        from shraddha.ui.timer import TimerBridge
         from shraddha.ui.tray import TrayController
         from shraddha.ui.voice import VoiceBridge
 
@@ -104,9 +106,14 @@ class AssistantController:
             enabled=self.config.commands.enabled,
         )
         self.executor = executor or ActionExecutor(
-            allow_power_actions=self.config.commands.allow_power_actions
+            allow_power_actions=self.config.commands.allow_power_actions, **windows_skills()
         )
         self.confirmation = ConfirmationGate()
+
+        # --- Phase 4 skills: timer, notes, clipboard, volume, windows, search -----
+        # Everything is injected, so an executor passed in by a test keeps its fakes.
+        self.timer = TimerBridge()
+        self._wire_skills()
         # --- cloud intelligence (Phase 3, opt-in) -------------------------
         # Constructing the service opens no socket: the provider is built lazily and only
         # when the three-way gate (enabled + provider + key + consent) is open.
@@ -140,6 +147,7 @@ class AssistantController:
         self.ai_bridge.final.connect(self.on_ai_final)
         self.ai_bridge.error.connect(self.on_ai_error)
         self.ai_bridge.cancelled.connect(self.on_ai_cancelled)
+        self.timer.fired.connect(self.on_timer_fired)
         if self.tray is not None:
             self.tray.activated.connect(self.on_tray_activated)
             self.tray.clear_requested.connect(self.on_clear_chat)
@@ -205,6 +213,7 @@ class AssistantController:
         self._shut_down = True
         self.hotkey.unregister()
         self.server.stop()
+        self.timer.close()
         self.ai_bridge.shutdown()
         self.bridge.shutdown()
         self._detach_bridge()
@@ -216,6 +225,43 @@ class AssistantController:
         self.overlay.hide()
         self._lock.release()
         log.info("shutdown complete")
+
+    # ------------------------------------------------------------- skills setup
+    def _wire_skills(self) -> None:
+        """Attach the Phase 4 skill dependencies. Idempotent; injected values win."""
+        have_db = self.db is not None
+        wiring: dict[str, object] = {
+            "timer": self.timer,
+            "notes_add": (lambda text: self.db.add_note(text)) if have_db else None,
+            "notes_recent": (
+                lambda limit: [note["text"] for note in self.db.recent_notes(limit)]
+            )
+            if have_db
+            else None,
+            "notes_clear": (lambda: self.db.delete_notes()) if have_db else None,
+            **windows_skills(),
+        }
+        for name, value in wiring.items():
+            if value is None:
+                continue
+            try:
+                if getattr(self.executor, name, None) is None:
+                    setattr(self.executor, name, value)
+            except AttributeError:  # an executor that does not accept skills
+                continue
+
+    def on_timer_fired(self, label: str) -> None:
+        """A timer ran out: say it once, in the chat and out loud."""
+        message = f"टाइमर पूरा हुआ - {label or 'समय'} बीत गया।"
+        log.info("timer finished (%s)", label)
+        self.overlay.append_message(message, KIND_SYSTEM)
+        self._persist("system", message)
+        self._speak(message)
+        if self.tray is not None:
+            try:
+                self.tray.notify("श्रद्धा - टाइमर", message)
+            except Exception as exc:  # a tray-less session must not crash here
+                log.debug("tray notification failed: %s", exc)
 
     # -------------------------------------------------------------- text input
     def on_submitted(self, text: str) -> None:

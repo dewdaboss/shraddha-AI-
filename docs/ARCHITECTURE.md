@@ -99,6 +99,8 @@ Mitigations that keep Python acceptable:
 | `commands/router.py` | Hindi/Hinglish sentence → validated intent (pure) | launch a process |
 | `commands/actions.py` | **the only module that launches a process or opens a folder** | trust a transcript |
 | `commands/confirmation.py` | spoken yes/no gate for sensitive actions | assume silence is consent |
+| `commands/timer.py` | one daemon `AlarmTimer`, Hindi duration words, injected callback | touch Qt or the file system |
+| `ui/timer.py` | Qt bridge: timer thread → queued signal → GUI thread | own the timer logic |
 | `ui/voice.py` | Qt bridge: worker thread → signals, no polling timers | decode audio on the GUI thread |
 | `ai/base.py` | `AiError` codes, `ChatMessage`, `LlmProvider` protocol, lazy-module probe | import a provider SDK |
 | `ai/keys.py` | key precedence (env → env → Credential Manager), masking, store/unstore | log or persist a key |
@@ -134,7 +136,7 @@ estimates for a 4-core Windows 10 laptop and are the ones to re-measure on real 
 
 | Stage | Budget |
 |---|---|
-| Process spawn → window ready | **200 ms measured** (budget 2 s) |
+| Process spawn → window ready | **228 ms measured** (budget 2 s) |
 | Hotkey → window shown | 50 ms |
 | Mic warm-up + VAD arm | 100 ms |
 | End of speech → transcript | 250–600 ms (int8 streaming ASR, ~1 s utterances) |
@@ -196,7 +198,33 @@ Three structural rules, each enforced by a test rather than by good intentions:
 Cost when unused: **0 sockets, 0 SDK imports, 0 extra threads.** Measured idle RSS with the
 whole AI layer wired in is 64.4 MB (Phase 2: 64.0 MB).
 
-## 8. Failure and privacy rules
+## 8. Everyday skills (Phase 4)
+
+```
+phrase ─► commands/router (pure, <0.2 ms) ─► Command(needs_confirmation?) ─► ConfirmationGate
+                                                    │                              │ yes
+                                                    └──────────────► ActionExecutor ◄┘
+                                                                         │
+                        timer │ notes │ clipboard │ volume │ windows │ file search
+```
+
+| Skill | Module | OS dependency | Failure behaviour |
+|---|---|---|---|
+| timer | `commands/timer.py` | `threading.Timer` (daemon) | scheduler error → "टाइमर शुरू नहीं हो सका" |
+| notes | `storage/db.py` | SQLite | store error → "नोट सेव नहीं हो सका" |
+| clipboard | `commands/actions.py` | `win32clipboard` | not Windows / locked → honest sentence |
+| volume | `commands/actions.py` | media keys (`keybd_event`) | ditto; absolute set refused by design |
+| windows | `commands/actions.py` | `ShowWindow` / `PostMessageW` | no foreground window → "कोई सक्रिय विंडो नहीं मिली" |
+| file search | `commands/actions.py` | none (pure `pathlib`) | bounded walk, no match → "नहीं मिली" |
+
+Rules kept from earlier phases:
+
+* the router stays pure — it never arms, presses or opens anything;
+* `commands/actions.py` is still the **only** module that may call the OS;
+* every destructive command carries `needs_confirmation=True`;
+* on a platform without the API the reply says so, and the doctor lists it as `MISS`.
+
+## 9. Failure and privacy rules
 
 - **Offline is normal, not an error state.** No feature may require the network except
   the one-time model download and the optional, per-question cloud answer.
@@ -208,7 +236,7 @@ whole AI layer wired in is 64.4 MB (Phase 2: 64.0 MB).
   fall back to the lighter engine. If TTS fails, show the text.
 - **Single instance** via a named mutex / lock file — a second launch focuses the first.
 
-## 9. Packaging
+## 10. Packaging
 
 | Concern | Choice |
 |---|---|

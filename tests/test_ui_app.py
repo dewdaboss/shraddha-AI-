@@ -58,7 +58,7 @@ def test_submitting_a_command_answers_and_persists(controller: AssistantControll
 
 def test_fallback_is_stored_too(controller: AssistantController) -> None:
     controller.on_submitted("भारत की राजधानी क्या है?")
-    assert "Phase 6" in controller.overlay.chat.messages[-1][1]
+    assert "क्लाउड AI" in controller.overlay.chat.messages[-1][1]
 
 
 def test_a_missing_microphone_is_explained_up_front(controller: AssistantController) -> None:

@@ -10,10 +10,32 @@ previous one meets its resource budget.
 | **2 — Hearing (हिन्दी STT)** ✅ | PortAudio capture, energy VAD, Vosk small-hi (sherpa-onnx opt-in), wake word, mute, Hindi/Hinglish command layer, safety gates, Hindi replies | idle RSS ≤ 90 MB ✅ (64.0 MB measured, Linux); recognition only while speaking ✅; 464 tests green ✅; **live-mic accuracy needs one Windows verification pass** |
 | **3 — Cloud intelligence (opt-in)** ✅ | Google Gemini via the official SDK, provider layer, key handling (env / Credential Manager), three-way consent gate, streamed answers in the chat, model fallback, Hindi error handling, doctor + CLI reporting | idle RSS ≤ 90 MB ✅ (64.4 MB measured, Linux); startup ≤ 2 s ✅ (200 ms); zero network before consent ✅; 615 tests green ✅; SDK imported lazily only on the worker ✅; **needs one Windows pass for the Credential Manager and a live key** |
 | **3b — Voice polish** | Piper first-run download UI, per-sentence streaming playback, interrupt/stop, voice preview in settings | first audio < 700 ms; both engines switchable from the UI (not just by voice) |
-| **4 — Understanding** | Extend the rule grammar: timer, note, clipboard, volume/brightness, window control, file *search* | ≥ 95 % accuracy on the intent test corpus, < 5 ms/match |
+| **4 — Everyday skills** ✅ | timer, notes, clipboard, relative volume, window minimise/close (confirmed), bounded file search; honest refusals where a platform cannot do it | 42-sentence intent corpus green ✅; **< 0.2 ms/match measured** (budget 5 ms) ✅; 721 tests green ✅; idle RSS 64.5 MB ✅; startup 228 ms ✅; **clipboard/volume/window APIs need one Windows pass** |
 | **5 — Memory** | history in SQLite, "yaad hai?" recall, settings persistence, per-user profile | history survives restart; DB stays < 5 MB after 10k turns |
 | **6 — Thinking (optional LLM)** | llama.cpp child process, spawn/idle-kill lifecycle, Hindi prompt template | first token < 3 s on 4 CPU cores; RSS returns to idle after 60 s |
 | **7 — Ship** | Nuitka build, Inno Setup installer, first-run model download, signing, release workflow | clean install on a fresh Win10 22H2 VM in < 3 min, works offline |
+
+## Phase 4 carry-over
+
+Phase 4 was built and tested on Linux with injected fakes: no clipboard was opened, no key
+was pressed and no window was closed. These items can only be confirmed on Windows 10:
+
+1. `win32clipboard` read/write, including when another app holds the clipboard open (the
+   handler reports it instead of crashing).
+2. Media-key volume steps on real hardware — and whether 5 presses ≈ 10 % there.
+3. `ShowWindow(SW_MINIMIZE)` and `WM_CLOSE` against normal, elevated and full-screen
+   windows (a crashed app may show the "this program is not responding" dialog).
+4. Tray balloon delivery for a fired timer while the overlay is hidden.
+5. Hindi speech of the timer announcement through OneCore/Piper.
+
+Deliberate limits from this phase (documented, not bugs):
+
+* absolute volume ("volume 40 karo") is recognised and honestly refused — no Core Audio
+  COM call is shipped untested;
+* "mute karo" still means the microphone; speaker mute needs the word "volume"/"आवाज़";
+* file search matches names literally, so "बजट" does not match `budget.xlsx`;
+* window commands act on the foreground window only, and there is no "paste into the
+  active app" (that is the riskiest possible command).
 
 ## Phase 3 carry-over
 
@@ -91,6 +113,23 @@ can only be confirmed on a real Windows 10 machine:
 6. **Keys live outside the config.** Environment variables first, then the Windows
    Credential Manager via the `win` extra that already exists — no new dependency, and
    `config.json` can be shared safely.
+
+## Decisions taken in Phase 4
+
+1. **A separate `commands/timer.py`, not a thread inside `ui/app.py`.** The timer is
+   logic (arm, replace, fire, cancel) and belongs with the other pure pieces; the Qt
+   signal is a thin bridge. It also makes the threading rule explicit: the callback runs
+   on the timer thread, the widgets are only touched after the queued signal.
+2. **Every skill takes an injected callable.** `ActionExecutor` gained `clipboard_read`,
+   `volume_control`, `window_control`, `timer`, `notes_*` and `search_roots`. That is why
+   31 action tests can prove the decisions without pressing a single key.
+3. **Destructive = confirmed.** Notes are data and windows hold unsaved work, so both
+   "नोट साफ़ करो" and "window बंद करो" reuse the Phase 2 confirmation gate.
+4. **Refuse what cannot be done well.** Absolute volume and cross-app paste are named in
+   the reply and in this document instead of being shipped half-working.
+5. **Search is bounded, never executes.** Depth ≤ 4, noise directories skipped, ≤ 12
+   results, names only — a spoken search must not become a file browser.
+6. **Daemon timer.** A pending timer must never keep the process (or a test run) alive.
 
 ## Non-goals
 

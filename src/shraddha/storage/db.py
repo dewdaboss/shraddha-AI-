@@ -192,6 +192,14 @@ class Database:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def delete_notes(self) -> int:
+        """Remove every note and return how many were deleted."""
+        with self._cursor() as cursor:
+            row = cursor.execute("SELECT COUNT(*) AS count FROM notes").fetchone()
+            total = int(row["count"]) if row is not None else 0
+            cursor.execute("DELETE FROM notes")
+            return total
+
     # ----------------------------------------------------------------- settings
     def set_setting(self, key: str, value: str) -> None:
         with self._cursor() as cursor:

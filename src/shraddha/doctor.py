@@ -66,6 +66,7 @@ class DoctorReport:
     asr_engines: dict[str, dict[str, object]] = field(default_factory=dict)
     wake_mode: str = ""
     ai: dict[str, object] = field(default_factory=dict)
+    skills: dict[str, str] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, object]:
@@ -91,6 +92,7 @@ class DoctorReport:
             "asr_engines": self.asr_engines,
             "wake_mode": self.wake_mode,
             "ai": self.ai,
+            "skills": self.skills,
             "warnings": self.warnings,
         }
 
@@ -172,6 +174,12 @@ class DoctorReport:
             )
         )
         lines.append(f"       status:   {ai.get('status', 'off')}")
+
+        lines += ["", "command skills (phase 4)", "-" * 46]
+        for name, state in self.skills.items():
+            marker = "ok  " if state == "ok" else "MISS"
+            note = "" if state == "ok" else f" - {state}"
+            lines.append(f"  {marker}  {name}{note}")
 
         if self.warnings:
             lines += ["", "warnings", "-" * 46, *(f"  ! {w}" for w in self.warnings)]
@@ -315,9 +323,25 @@ def run_doctor(paths: Paths | None = None, config: AppConfig | None = None) -> D
     report.asr_engines = engine_report(resolved.models)
     report.wake_mode = loaded.wake.mode
     report.ai = _check_ai(loaded)
+    report.skills = _check_skills()
 
     _append_advice(report, loaded)
     return report
+
+
+def _check_skills() -> dict[str, str]:
+    """Which Phase 4 skills this machine actually has. No side effects, no calls."""
+    windows = sys.platform == "win32"
+    clipboard = windows and _module_present(("win32clipboard",))
+    other = "ok" if windows else "Windows only"
+    return {
+        "timer": "ok",
+        "notes": "ok",
+        "file search": "ok",
+        "clipboard": "ok" if clipboard else ("pip install -e '.[win]'" if windows else other),
+        "volume": other,
+        "windows": other,
+    }
 
 
 def _check_ai(config: AppConfig) -> dict[str, object]:
@@ -393,6 +417,10 @@ def _append_advice(report: DoctorReport, config: AppConfig) -> None:
     if not any(bool(info.get("ready")) for info in report.asr_engines.values()):
         report.warnings.append(
             "no Hindi speech model is ready: python scripts/fetch_models.py --set asr-light"
+        )
+    if sys.platform == "win32" and report.skills.get("clipboard", "ok") != "ok":
+        report.warnings.append(
+            "clipboard commands need pywin32: pip install -e '.[win]'"
         )
     if not report.microphone.get("available"):
         report.warnings.append(f"microphone unavailable: {report.microphone.get('reason')}")
